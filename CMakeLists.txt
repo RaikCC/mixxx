@@ -209,7 +209,7 @@ if(UNIX AND NOT APPLE)
     OUTPUT_VARIABLE UNAME_R
     OUTPUT_STRIP_TRAILING_WHITESPACE
   )
-  if(UNAME_R MATCHES ".*[Mm]icrosoft.*" OR UNAME_R MATCHES ".*WSL.*")
+if(FALSE) # WSL guard disabled (ETA Notes fork)
     message(
       FATAL_ERROR
       "Building on Windows Subsystem for Linux (WSL) is not supported. If you want to build Mixxx from command line on Windows, you need to use the \"x64 Native Tools Command Prompt for VS 2022\"!"
