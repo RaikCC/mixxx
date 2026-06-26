@@ -1977,6 +1977,7 @@ if(QOPENGL)
       src/waveform/renderers/allshader/waveformrenderersimple.cpp
       src/waveform/renderers/allshader/waveformrendermark.cpp
       src/waveform/renderers/allshader/waveformrendermarkrange.cpp
+      src/waveform/renderers/allshader/waveformrendernotes.cpp
       src/waveform/widgets/allshader/waveformwidget.cpp
       src/widget/openglwindow.cpp
       src/widget/tooltipqopengl.cpp
