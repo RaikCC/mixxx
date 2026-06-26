@@ -1351,6 +1351,7 @@ add_library(
   src/library/dao/analysisdao.cpp
   src/library/dao/autodjcratesdao.cpp
   src/library/dao/cuedao.cpp
+  src/library/dao/notesdao.cpp
   src/library/dao/directorydao.cpp
   src/library/dao/libraryhashdao.cpp
   src/library/dao/playlistdao.cpp
@@ -1552,6 +1553,7 @@ add_library(
   src/track/beatutils.cpp
   src/track/bpm.cpp
   src/track/cue.cpp
+  src/track/note.cpp
   src/track/cueinfo.cpp
   src/track/cueinfoimporter.cpp
   src/track/globaltrackcache.cpp

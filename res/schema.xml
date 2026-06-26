@@ -584,4 +584,26 @@ reapplying those migrations.
       UPDATE library SET filetype='aiff' WHERE filetype='aif';
     </sql>
   </revision>
+  <revision version="40" min_compatible="3">
+    <description>
+      Add the track_notes table for the ETA Notes feature: free-form,
+      timecode-anchored text notes attached to a track's waveform.
+      Backwards compatible: a new table that older Mixxx versions simply
+      ignore, so they can still open the database (min_compatible=3).
+      <!-- See src/track/note.h and src/library/dao/notesdao.h -->
+    </description>
+    <sql>
+      CREATE TABLE IF NOT EXISTS track_notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        track_id INTEGER NOT NULL REFERENCES library(id),
+        <!-- Position is actually stored as a SQLite REAL (double) engine
+        sample position, mirroring the cues table for sub-sample accuracy. -->
+        position INTEGER DEFAULT -1 NOT NULL,
+        content TEXT DEFAULT '' NOT NULL,
+        <!-- Optional reference to another track (transition notes).
+        NULL means the note refers to its own track. -->
+        ref_track_id INTEGER DEFAULT NULL REFERENCES library(id));
+      CREATE INDEX IF NOT EXISTS idx_track_notes_track_id ON track_notes (track_id);
+    </sql>
+  </revision>
 </schema>

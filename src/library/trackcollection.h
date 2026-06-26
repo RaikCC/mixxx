@@ -10,6 +10,7 @@
 #include "library/dao/cuedao.h"
 #include "library/dao/directorydao.h"
 #include "library/dao/libraryhashdao.h"
+#include "library/dao/notesdao.h"
 #include "library/dao/playlistdao.h"
 #include "library/dao/trackdao.h"
 #include "library/trackset/crate/cratestorage.h"
@@ -67,6 +68,10 @@ class TrackCollection : public QObject,
     AnalysisDao& getAnalysisDAO() {
         DEBUG_ASSERT_QOBJECT_THREAD_AFFINITY(this);
         return m_analysisDao;
+    }
+    NotesDAO& getNotesDAO() {
+        DEBUG_ASSERT_QOBJECT_THREAD_AFFINITY(this);
+        return m_notesDao;
     }
 
     void connectTrackSource(QSharedPointer<BaseTrackCache> pTrackSource);
@@ -173,6 +178,7 @@ class TrackCollection : public QObject,
     PlaylistDAO m_playlistDao;
     CrateStorage m_crates;
     CueDAO m_cueDao;
+    NotesDAO m_notesDao;
     DirectoryDAO m_directoryDao;
     AnalysisDao m_analysisDao;
     LibraryHashDAO m_libraryHashDao;

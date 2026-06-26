@@ -74,6 +74,7 @@ void TrackCollection::connectDatabase(const QSqlDatabase& database) {
     m_trackDao.initialize(database);
     m_playlistDao.initialize(database);
     m_cueDao.initialize(database);
+    m_notesDao.initialize(database);
     m_directoryDao.initialize(database);
     m_analysisDao.initialize(database);
     m_libraryHashDao.initialize(database);
@@ -397,6 +398,7 @@ bool TrackCollection::purgeTracks(
     }
     // TODO(XXX): Move reversible actions inside transaction
     m_cueDao.deleteCuesForTracks(trackIds);
+    m_notesDao.deleteNotesForTracks(trackIds);
     m_playlistDao.removeTracksFromPlaylists(trackIds, true);
     m_analysisDao.deleteAnalyses(trackIds);
 
