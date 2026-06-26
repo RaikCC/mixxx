@@ -48,7 +48,8 @@ QList<NotePointer> NotesDAO::getNotesForTrack(TrackId trackId) const {
 
     FwdSqlQuery query(
             m_database,
-            QStringLiteral("SELECT * FROM " NOTE_TABLE " WHERE track_id=:id"));
+            QStringLiteral("SELECT * FROM " NOTE_TABLE
+                           " WHERE track_id=:id ORDER BY position"));
     DEBUG_ASSERT(
             query.isPrepared() &&
             !query.hasError());

@@ -3,6 +3,7 @@
 
 #include "test/librarytest.h"
 #include "track/globaltrackcache.h"
+#include "track/note.h"
 #include "track/track.h"
 
 using ::testing::UnorderedElementsAre;
@@ -85,4 +86,46 @@ TEST_F(TrackDAOTest, bpmLockPreservedForTrackWithoutBeats) {
     ASSERT_TRUE(pReloaded);
     EXPECT_FALSE(pReloaded->getBeats());
     EXPECT_TRUE(pReloaded->isBpmLocked());
+}
+
+// Round-trip test for the ETA Notes data layer (concept document section 4):
+// notes attached to a track must be persisted to the database when the track
+// is saved and restored when it is reloaded.
+TEST_F(TrackDAOTest, etaNotesPersistedAcrossReload) {
+    const mixxx::FileInfo fileInfo(
+            QDir(QDir::tempPath()), QStringLiteral("track-with-eta-notes.mp3"));
+    TrackPointer pTrack = Track::newTemporary(mixxx::FileAccess(fileInfo));
+    pTrack->setDuration(135);
+
+    const auto pos1 = mixxx::audio::FramePos(1000);
+    const auto pos2 = mixxx::audio::FramePos(2000);
+    QList<NotePointer> notes;
+    notes.append(NotePointer(
+            new Note(pos1, QStringLiteral("intro: 8 bars"), TrackId())));
+    notes.append(NotePointer(
+            new Note(pos2, QStringLiteral("drop"), TrackId())));
+    pTrack->setNotes(notes);
+
+    const TrackId trackId = internalCollection()->addTrack(pTrack, false);
+    ASSERT_TRUE(trackId.isValid());
+
+    // Dropping the last reference evicts the track from the cache synchronously,
+    // so the lookup below reloads it from the database instead of returning the
+    // cached in-memory object.
+    pTrack.reset();
+    ASSERT_TRUE(GlobalTrackCacheLocker().isEmpty());
+
+    const TrackPointer pReloaded = internalCollection()->getTrackById(trackId);
+    ASSERT_TRUE(pReloaded);
+    const QList<NotePointer> reloadedNotes = pReloaded->getNotes();
+    ASSERT_EQ(2, reloadedNotes.size());
+    // Notes are returned ordered by position (see NotesDAO::getNotesForTrack).
+    EXPECT_EQ(pos1, reloadedNotes.at(0)->getPosition());
+    EXPECT_EQ(QStringLiteral("intro: 8 bars"), reloadedNotes.at(0)->getContent());
+    EXPECT_EQ(pos2, reloadedNotes.at(1)->getPosition());
+    EXPECT_EQ(QStringLiteral("drop"), reloadedNotes.at(1)->getContent());
+    // No reference track set -> the note refers to its own track.
+    EXPECT_FALSE(reloadedNotes.at(0)->getRefTrackId().isValid());
+    // Persisted notes are no longer dirty after the reload.
+    EXPECT_FALSE(reloadedNotes.at(0)->isDirty());
 }

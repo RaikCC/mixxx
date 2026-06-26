@@ -14,6 +14,7 @@
 #include "library/coverartutils.h"
 #include "library/dao/analysisdao.h"
 #include "library/dao/cuedao.h"
+#include "library/dao/notesdao.h"
 #include "library/dao/libraryhashdao.h"
 #include "library/dao/playlistdao.h"
 #include "library/dao/trackschema.h"
@@ -89,11 +90,13 @@ QSet<QString> collectTrackLocations(FwdSqlQuery& query) {
 } // anonymous namespace
 
 TrackDAO::TrackDAO(CueDAO& cueDao,
+                   NotesDAO& notesDao,
                    PlaylistDAO& playlistDao,
                    AnalysisDao& analysisDao,
                    LibraryHashDAO& libraryHashDao,
                    UserSettingsPointer pConfig)
         : m_cueDao(cueDao),
+          m_notesDao(notesDao),
           m_playlistDao(playlistDao),
           m_analysisDao(analysisDao),
           m_libraryHashDao(libraryHashDao),
@@ -858,6 +861,9 @@ TrackId TrackDAO::addTracksAddTrack(const TrackPointer& pTrack, bool unremove) {
         m_cueDao.saveTrackCues(
                 trackId,
                 pTrack->getCuePoints());
+        m_notesDao.saveTrackNotes(
+                trackId,
+                pTrack->getNotes());
 
         DEBUG_ASSERT(!m_tracksAddedSet.contains(trackId));
         m_tracksAddedSet.insert(trackId);
@@ -1567,6 +1573,8 @@ TrackPointer TrackDAO::getTrackById(TrackId trackId) const {
 
     // Populate track cues from the cues table.
     pTrack->setCuePoints(m_cueDao.getCuesForTrack(trackId));
+    // Populate the track's ETA notes from the track_notes table.
+    pTrack->setNotes(m_notesDao.getNotesForTrack(trackId));
     pTrack->markClean();
 
     // Synchronize the track's metadata with the corresponding source
@@ -1765,6 +1773,8 @@ bool TrackDAO::updateTrack(const Track& track) const {
             track.getWaveformSummary());
     m_cueDao.saveTrackCues(
             trackId, track.getCuePoints());
+    m_notesDao.saveTrackNotes(
+            trackId, track.getNotes());
     transaction.commit();
 
     // kLogger.debug() << "Update track in database took: " <<

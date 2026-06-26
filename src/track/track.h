@@ -11,6 +11,7 @@
 #include "track/beats.h"
 #include "track/cue.h"
 #include "track/cueinfoimporter.h"
+#include "track/note.h"
 #ifdef __STEM__
 #include "track/steminfo.h"
 #include "track/steminfoimporter.h"
@@ -347,6 +348,15 @@ class Track : public QObject {
     void swapHotcues(int a, int b);
     void setCuePoints(const QList<CuePointer>& cuePoints);
 
+    // Calls for managing the track's ETA notes (free-form, timecode-anchored
+    // text notes on the waveform; see the concept document section 4).
+    QList<NotePointer> getNotes() const {
+        const QMutexLocker lock(&m_qMutex);
+        // lock thread-unsafe copy constructors of QList
+        return m_notes;
+    }
+    void setNotes(const QList<NotePointer>& notes);
+
 #ifdef __STEM__
     QList<StemInfo> getStemInfo() const {
         const QMutexLocker lock(&m_qMutex);
@@ -492,6 +502,7 @@ class Track : public QObject {
     void colorUpdated(const mixxx::RgbColor::optional_t& color);
     void ratingUpdated(int rating);
     void cuesUpdated();
+    void notesUpdated();
 #ifdef __STEM__
     void stemsUpdated();
 #endif
@@ -504,6 +515,7 @@ class Track : public QObject {
 
   private slots:
     void slotCueUpdated();
+    void slotNoteUpdated();
 
   private:
     /// Set a unique identifier for the track.
@@ -580,6 +592,14 @@ class Track : public QObject {
     void importPendingCueInfosMarkDirtyAndUnlock(
             QT_RECURSIVE_MUTEX_LOCKER* pLock);
 
+    /// Sets ETA notes and returns a boolean to indicate if notes were updated.
+    /// Only supposed to be called while the caller guards this a lock.
+    bool setNotesWhileLocked(const QList<NotePointer>& notes);
+
+    void setNotesMarkDirtyAndUnlock(
+            QT_RECURSIVE_MUTEX_LOCKER* pLock,
+            const QList<NotePointer>& notes);
+
     /// Merge additional metadata that is not (yet) stored in the database
     /// and only available from file tags.
     ///
@@ -613,6 +633,9 @@ class Track : public QObject {
 
     // The list of cue points for the track
     QList<CuePointer> m_cuePoints;
+
+    // The list of ETA notes for the track
+    QList<NotePointer> m_notes;
 
 #ifdef __STEM__
     // The list of stem info

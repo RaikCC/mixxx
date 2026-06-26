@@ -10,6 +10,7 @@
 
 #include "library/dao/analysisdao.h"
 #include "library/dao/cuedao.h"
+#include "library/dao/notesdao.h"
 #include "library/dao/directorydao.h"
 #include "library/dao/libraryhashdao.h"
 #include "library/dao/playlistdao.h"
@@ -108,6 +109,7 @@ class LibraryScanner : public QThread {
     // The library scanner thread's DAOs.
     LibraryHashDAO m_libraryHashDao;
     CueDAO m_cueDao;
+    NotesDAO m_notesDao;
     PlaylistDAO m_playlistDao;
     DirectoryDAO m_directoryDao;
     AnalysisDao m_analysisDao;

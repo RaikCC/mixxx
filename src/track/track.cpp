@@ -1382,6 +1382,60 @@ void Track::setCuePointsMarkDirtyAndUnlock(
     emit cuesUpdated();
 }
 
+void Track::slotNoteUpdated() {
+    markDirty();
+    emit notesUpdated();
+}
+
+void Track::setNotes(const QList<NotePointer>& notes) {
+    // While this method could be called from any thread,
+    // associated Note objects should always live on the
+    // same thread as their host, namely this->thread().
+    for (const auto& pNote : notes) {
+        pNote->moveToThread(thread());
+    }
+    auto locked = lockMutex(&m_qMutex);
+    setNotesMarkDirtyAndUnlock(
+            &locked,
+            notes);
+}
+
+bool Track::setNotesWhileLocked(const QList<NotePointer>& notes) {
+    if (m_notes.isEmpty() && notes.isEmpty()) {
+        // Nothing to do
+        return false;
+    }
+    // disconnect existing notes
+    for (const auto& pNote : std::as_const(m_notes)) {
+        disconnect(pNote.get(), nullptr, this, nullptr);
+    }
+
+    m_notes = notes;
+    // connect new notes
+    for (const auto& pNote : std::as_const(m_notes)) {
+        DEBUG_ASSERT(pNote->thread() == thread());
+        connect(pNote.get(),
+                &Note::updated,
+                this,
+                &Track::slotNoteUpdated);
+    }
+    return true;
+}
+
+void Track::setNotesMarkDirtyAndUnlock(
+        QT_RECURSIVE_MUTEX_LOCKER* pLock,
+        const QList<NotePointer>& notes) {
+    DEBUG_ASSERT(pLock);
+
+    if (!setNotesWhileLocked(notes)) {
+        pLock->unlock();
+        return;
+    }
+
+    markDirtyAndUnlock(pLock);
+    emit notesUpdated();
+}
+
 bool Track::importPendingCueInfosWhileLocked() {
     if (!m_pCueInfoImporterPending) {
         // Nothing to do here

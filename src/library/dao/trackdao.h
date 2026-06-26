@@ -16,6 +16,7 @@ class SqlTransaction;
 class PlaylistDAO;
 class AnalysisDao;
 class CueDAO;
+class NotesDAO;
 class LibraryHashDAO;
 
 namespace mixxx {
@@ -39,6 +40,7 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
     // synchronized on track metadata change
     TrackDAO(
             CueDAO& cueDao,
+            NotesDAO& notesDao,
             PlaylistDAO& playlistDao,
             AnalysisDao& analysisDao,
             LibraryHashDAO& libraryHashDao,
@@ -201,6 +203,7 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
     mixxx::FileAccess relocateCachedTrack(TrackId trackId) override;
 
     CueDAO& m_cueDao;
+    NotesDAO& m_notesDao;
     PlaylistDAO& m_playlistDao;
     AnalysisDao& m_analysisDao;
     LibraryHashDAO& m_libraryHashDao;
