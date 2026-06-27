@@ -54,6 +54,7 @@
         <file>images/preferences/dark/ic_preferences_decks.svg</file>
         <file>images/preferences/dark/ic_preferences_effects.svg</file>
         <file>images/preferences/dark/ic_preferences_equalizers.svg</file>
+        <file>images/preferences/dark/ic_preferences_etanotes.svg</file>
         <file>images/preferences/dark/ic_preferences_hid.svg</file>
         <file>images/preferences/dark/ic_preferences_interface.svg</file>
         <file>images/preferences/dark/ic_preferences_keydetect.svg</file>
@@ -81,6 +82,7 @@
         <file>images/preferences/light/ic_preferences_decks.svg</file>
         <file>images/preferences/light/ic_preferences_effects.svg</file>
         <file>images/preferences/light/ic_preferences_equalizers.svg</file>
+        <file>images/preferences/light/ic_preferences_etanotes.svg</file>
         <file>images/preferences/light/ic_preferences_hid.svg</file>
         <file>images/preferences/light/ic_preferences_interface.svg</file>
         <file>images/preferences/light/ic_preferences_keydetect.svg</file>

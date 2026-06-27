@@ -69,6 +69,7 @@ bool shouldRenderWaveform(WaveformWidgetAbstract* pWaveformWidget) {
 const QRegularExpression openGLVersionRegex(QStringLiteral("^(\\d+)\\.(\\d+).*$"));
 
 const QString kWaveformGroup(QStringLiteral("[Waveform]"));
+const QString kEtaNotesGroup(QStringLiteral("[EtaNotes]"));
 const ConfigKey kWaveformTypeKey =
         ConfigKey(kWaveformGroup, QStringLiteral("WaveformType"));
 const ConfigKey kHardwareAccelerationKey =
@@ -133,6 +134,15 @@ WaveformWidgetFactory::WaveformWidgetFactory()
           m_untilMarkAlign(Qt::AlignVCenter),
           m_untilMarkTextPointSize(24),
           m_untilMarkTextHeightLimit(toUntilMarkTextHeightLimit(0)),
+          m_etaNotesEnabled(true),
+          m_etaFontPointSize(10.0),
+          m_etaShowBeats(true),
+          m_etaShowTime(true),
+          m_etaAlignRightEdgeAtPlayhead(false),
+          m_etaWindowBeats(64),
+          m_etaNoteWidthPx(360.0),
+          m_etaAfterglowBeats(4),
+          m_etaAfterglowOpacity(0.6),
           m_openGlAvailable(false),
           m_openGlesAvailable(false),
           m_openGLShaderAvailable(false),
@@ -147,6 +157,10 @@ WaveformWidgetFactory::WaveformWidgetFactory()
     m_visualGain[Low] = kVisualGainDefault[Low];
     m_visualGain[Mid] = kVisualGainDefault[Mid];
     m_visualGain[High] = kVisualGainDefault[High];
+
+    for (int i = 0; i < kNumEtaColorCases; ++i) {
+        m_etaColorSchemes[i] = etaDefaultColorScheme(static_cast<EtaColorCase>(i));
+    }
 
 #ifdef MIXXX_USE_QOPENGL
     WGLWidget* widget = SharedGLContext::getWidget();
@@ -462,6 +476,7 @@ bool WaveformWidgetFactory::setConfig(UserSettingsPointer config) {
     setUntilMarkTextHeightLimit(toUntilMarkTextHeightLimit(m_config->getValue(
             ConfigKey(kWaveformGroup, QStringLiteral("UntilMarkTextHeightLimit")),
             toUntilMarkTextHeightLimitIndex(m_untilMarkTextHeightLimit))));
+    loadEtaNotesSettings();
     setStemReorderOnChange(m_config->getValue(
             ConfigKey(kWaveformGroup, QStringLiteral("stem_reorder_on_change")),
             true));
@@ -1471,6 +1486,156 @@ void WaveformWidgetFactory::setUntilMarkTextHeightLimit(float value) {
                 toUntilMarkTextHeightLimitIndex(m_untilMarkTextHeightLimit));
     }
     emit untilMarkTextHeightLimitChanged(value);
+}
+
+// --- ETA Notes settings (concept section 9) ---------------------------------
+namespace {
+// Config item key for one ETA color, e.g. "Color_Own_BgNormal", in [EtaNotes].
+QString etaColorKey(EtaColorCase colorCase, const char* role) {
+    const char* caseName = "Own";
+    switch (colorCase) {
+    case EtaColorCase::Own:
+        caseName = "Own";
+        break;
+    case EtaColorCase::Deck1:
+        caseName = "Deck1";
+        break;
+    case EtaColorCase::Deck2:
+        caseName = "Deck2";
+        break;
+    case EtaColorCase::Deck3:
+        caseName = "Deck3";
+        break;
+    case EtaColorCase::Deck4:
+        caseName = "Deck4";
+        break;
+    }
+    return QStringLiteral("Color_%1_%2")
+            .arg(QLatin1String(caseName), QLatin1String(role));
+}
+} // namespace
+
+void WaveformWidgetFactory::setEtaNotesEnabled(bool value) {
+    m_etaNotesEnabled = value;
+    if (m_config) {
+        m_config->setValue(ConfigKey(kEtaNotesGroup, QStringLiteral("Enabled")), value);
+    }
+}
+
+void WaveformWidgetFactory::setEtaFontPointSize(double value) {
+    m_etaFontPointSize = value;
+    if (m_config) {
+        m_config->setValue(ConfigKey(kEtaNotesGroup, QStringLiteral("FontPointSize")), value);
+    }
+}
+
+void WaveformWidgetFactory::setEtaShowBeats(bool value) {
+    m_etaShowBeats = value;
+    if (m_config) {
+        m_config->setValue(ConfigKey(kEtaNotesGroup, QStringLiteral("ShowBeats")), value);
+    }
+}
+
+void WaveformWidgetFactory::setEtaShowTime(bool value) {
+    m_etaShowTime = value;
+    if (m_config) {
+        m_config->setValue(ConfigKey(kEtaNotesGroup, QStringLiteral("ShowTime")), value);
+    }
+}
+
+void WaveformWidgetFactory::setEtaAlignRightEdgeAtPlayhead(bool value) {
+    m_etaAlignRightEdgeAtPlayhead = value;
+    if (m_config) {
+        m_config->setValue(
+                ConfigKey(kEtaNotesGroup, QStringLiteral("AlignRightEdgeAtPlayhead")), value);
+    }
+}
+
+void WaveformWidgetFactory::setEtaWindowBeats(int value) {
+    m_etaWindowBeats = value;
+    if (m_config) {
+        m_config->setValue(ConfigKey(kEtaNotesGroup, QStringLiteral("WindowBeats")), value);
+    }
+}
+
+void WaveformWidgetFactory::setEtaNoteWidthPx(double value) {
+    m_etaNoteWidthPx = value;
+    if (m_config) {
+        m_config->setValue(ConfigKey(kEtaNotesGroup, QStringLiteral("NoteWidthPx")), value);
+    }
+}
+
+void WaveformWidgetFactory::setEtaAfterglowBeats(int value) {
+    m_etaAfterglowBeats = value;
+    if (m_config) {
+        m_config->setValue(ConfigKey(kEtaNotesGroup, QStringLiteral("AfterglowBeats")), value);
+    }
+}
+
+void WaveformWidgetFactory::setEtaAfterglowOpacity(double value) {
+    m_etaAfterglowOpacity = value;
+    if (m_config) {
+        m_config->setValue(ConfigKey(kEtaNotesGroup, QStringLiteral("AfterglowOpacity")), value);
+    }
+}
+
+void WaveformWidgetFactory::setEtaColorScheme(
+        EtaColorCase colorCase, const EtaNoteColorScheme& scheme) {
+    m_etaColorSchemes[static_cast<int>(colorCase)] = scheme;
+    if (m_config) {
+        m_config->setValue(ConfigKey(kEtaNotesGroup, etaColorKey(colorCase, "BgNormal")),
+                scheme.bgNormal.name());
+        m_config->setValue(ConfigKey(kEtaNotesGroup, etaColorKey(colorCase, "BgContrast")),
+                scheme.bgContrast.name());
+        m_config->setValue(ConfigKey(kEtaNotesGroup, etaColorKey(colorCase, "FontNormal")),
+                scheme.fontNormal.name());
+        m_config->setValue(ConfigKey(kEtaNotesGroup, etaColorKey(colorCase, "FontContrast")),
+                scheme.fontContrast.name());
+    }
+}
+
+void WaveformWidgetFactory::loadEtaNotesSettings() {
+    if (!m_config) {
+        return;
+    }
+    // Each setter writes the value back to config, so the defaults are seeded
+    // into a fresh config file on first run.
+    setEtaNotesEnabled(m_config->getValue(
+            ConfigKey(kEtaNotesGroup, QStringLiteral("Enabled")), m_etaNotesEnabled));
+    setEtaFontPointSize(m_config->getValue(
+            ConfigKey(kEtaNotesGroup, QStringLiteral("FontPointSize")), m_etaFontPointSize));
+    setEtaShowBeats(m_config->getValue(
+            ConfigKey(kEtaNotesGroup, QStringLiteral("ShowBeats")), m_etaShowBeats));
+    setEtaShowTime(m_config->getValue(
+            ConfigKey(kEtaNotesGroup, QStringLiteral("ShowTime")), m_etaShowTime));
+    setEtaAlignRightEdgeAtPlayhead(m_config->getValue(
+            ConfigKey(kEtaNotesGroup, QStringLiteral("AlignRightEdgeAtPlayhead")),
+            m_etaAlignRightEdgeAtPlayhead));
+    setEtaWindowBeats(m_config->getValue(
+            ConfigKey(kEtaNotesGroup, QStringLiteral("WindowBeats")), m_etaWindowBeats));
+    setEtaNoteWidthPx(m_config->getValue(
+            ConfigKey(kEtaNotesGroup, QStringLiteral("NoteWidthPx")), m_etaNoteWidthPx));
+    setEtaAfterglowBeats(m_config->getValue(
+            ConfigKey(kEtaNotesGroup, QStringLiteral("AfterglowBeats")), m_etaAfterglowBeats));
+    setEtaAfterglowOpacity(m_config->getValue(
+            ConfigKey(kEtaNotesGroup, QStringLiteral("AfterglowOpacity")), m_etaAfterglowOpacity));
+
+    for (int i = 0; i < kNumEtaColorCases; ++i) {
+        const auto colorCase = static_cast<EtaColorCase>(i);
+        EtaNoteColorScheme scheme = m_etaColorSchemes[i]; // start from the defaults
+        const auto readColor = [&](const char* role, QColor* pTarget) {
+            const QColor color(m_config->getValueString(
+                    ConfigKey(kEtaNotesGroup, etaColorKey(colorCase, role))));
+            if (color.isValid()) {
+                *pTarget = color;
+            }
+        };
+        readColor("BgNormal", &scheme.bgNormal);
+        readColor("BgContrast", &scheme.bgContrast);
+        readColor("FontNormal", &scheme.fontNormal);
+        readColor("FontContrast", &scheme.fontContrast);
+        setEtaColorScheme(colorCase, scheme);
+    }
 }
 
 void WaveformWidgetFactory::setStemReorderOnChange(bool value) {

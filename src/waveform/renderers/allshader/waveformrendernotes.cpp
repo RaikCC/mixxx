@@ -25,6 +25,7 @@
 #include "util/roundtopixel.h"
 #include "waveform/renderers/allshader/digitsrenderer.h"
 #include "waveform/renderers/waveformwidgetrenderer.h"
+#include "waveform/waveformwidgetfactory.h"
 #include "widget/wskincolor.h"
 
 using namespace rendergraph;
@@ -91,11 +92,9 @@ class NoteLabelNode : public rendergraph::GeometryNode {
 
 namespace {
 
-// One shared font size for the note labels and the live-ETA countdown digits,
-// so the two read as a single unit (concept section 9 has a single note font
-// size; the preferences UI in phase 2d will drive this). Padding around the
-// text inside the rounded boxes.
-constexpr double kEtaFontPointSize = 10.0;
+// Padding around the text inside the rounded note boxes. The note font size is
+// a setting (concept section 9), threaded through these helpers as a parameter
+// so labels, the live-ETA bar and the countdown digits stay one visual unit.
 constexpr float kBoxPaddingX = 4.f;
 constexpr float kBoxPaddingY = 2.f;
 
@@ -110,49 +109,26 @@ constexpr float kDigitsGapFactor = 0.75f;
 // Gap between the countdown field and the note content inside an ETA bar.
 constexpr float kEtaInnerGap = 6.f;
 
-QFont etaFont() {
+QFont etaFont(double pointSize) {
     QFont font;
-    font.setPointSizeF(kEtaFontPointSize);
+    font.setPointSizeF(pointSize);
     return font;
 }
 
-// Logical height of a note box (label or countdown field) for the shared font.
-float etaBoxHeight() {
-    const QFontMetricsF metrics{etaFont()};
+// Logical height of a note box (label or countdown field) for the note font.
+float etaBoxHeight(double pointSize) {
+    const QFontMetricsF metrics{etaFont(pointSize)};
     return std::ceil(static_cast<float>(metrics.height()) + 2.f * kBoxPaddingY);
 }
 
-// Text baseline (logical px from the top of a note box) for the shared font, so
+// Text baseline (logical px from the top of a note box) for the note font, so
 // the countdown digits and the content text can share a single baseline.
-float etaBaselineY() {
-    const QFontMetricsF metrics{etaFont()};
-    return etaBoxHeight() / 2.f +
+float etaBaselineY(double pointSize) {
+    const QFontMetricsF metrics{etaFont(pointSize)};
+    return etaBoxHeight(pointSize) / 2.f +
             (static_cast<float>(metrics.ascent()) -
                     static_cast<float>(metrics.descent())) /
                     2.f;
-}
-
-QColor contrastingTextColor(const QColor& background) {
-    // Rec. 601 luma: pick black text on a light background, white on a dark one.
-    const double luma = 0.299 * background.redF() +
-            0.587 * background.greenF() + 0.114 * background.blueF();
-    return luma > 0.5 ? QColor(Qt::black) : QColor(Qt::white);
-}
-
-// A visibly different color for the proximity indicator: the complementary hue
-// (opposite on the color wheel), kept saturated and bright. Falls back to a fixed
-// accent for achromatic (gray) inputs that have no hue.
-QColor complementaryColor(const QColor& color) {
-    int h = 0;
-    int s = 0;
-    int v = 0;
-    color.getHsv(&h, &s, &v);
-    if (h < 0) { // achromatic: no hue to complement
-        return QColor(0, 153, 255);
-    }
-    QColor out;
-    out.setHsv((h + 180) % 360, std::max(s, 180), std::max(v, 200));
-    return out;
 }
 
 // Format a duration as "m:ss.cc" for the ETA countdown (copied from
@@ -174,10 +150,7 @@ QString timeSecToString(double timeSec) {
 allshader::WaveformRenderNotes::WaveformRenderNotes(
         WaveformWidgetRenderer* waveformWidget,
         ::WaveformRendererAbstract::PositionSource type)
-        : ::WaveformRendererAbstract(waveformWidget),
-          // Distinct default until the per-deck note color setting (concept
-          // section 9, a later phase) is wired into the preferences.
-          m_color(255, 200, 0) {
+        : ::WaveformRendererAbstract(waveformWidget) {
     Q_UNUSED(type); // notes are always drawn at the play position for now
 
     {
@@ -227,11 +200,27 @@ bool allshader::WaveformRenderNotes::init() {
 
 void allshader::WaveformRenderNotes::setup(
         const QDomNode& node, const SkinContext& skinContext) {
-    const QString colorName =
-            skinContext.selectString(node, QStringLiteral("NoteColor"));
-    if (!colorName.isEmpty()) {
-        m_color = WSkinColor::getCorrectColor(QColor(colorName)).toRgb();
+    // Note colors are driven by the preferences (concept section 9), not the
+    // skin, so there is nothing to read here.
+    Q_UNUSED(node);
+    Q_UNUSED(skinContext);
+}
+
+void allshader::WaveformRenderNotes::refreshSettings() {
+    auto* pFactory = WaveformWidgetFactory::instance();
+    if (!pFactory) {
+        return;
     }
+    m_etaEnabled = pFactory->getEtaNotesEnabled();
+    m_etaFontPointSize = pFactory->getEtaFontPointSize();
+    m_etaShowBeats = pFactory->getEtaShowBeats();
+    m_etaShowTime = pFactory->getEtaShowTime();
+    m_etaAlignRightEdgeAtPlayhead = pFactory->getEtaAlignRightEdgeAtPlayhead();
+    m_etaWindowBeats = pFactory->getEtaWindowBeats();
+    m_etaAfterglowBeats = pFactory->getEtaAfterglowBeats();
+    m_etaAfterglowOpacity = static_cast<float>(pFactory->getEtaAfterglowOpacity());
+    m_etaNoteWidthPx = static_cast<float>(pFactory->getEtaNoteWidthPx());
+    m_ownScheme = pFactory->getEtaColorScheme(EtaColorCase::Own);
 }
 
 QImage allshader::WaveformRenderNotes::bakeLabel(
@@ -241,12 +230,12 @@ QImage allshader::WaveformRenderNotes::bakeLabel(
         text = QStringLiteral("(empty)"); // placeholder for an empty note
     }
 
-    const QFont font = etaFont();
+    const QFont font = etaFont(m_etaFontPointSize);
     const QFontMetricsF metrics{font};
 
     const float w = std::ceil(
             static_cast<float>(metrics.horizontalAdvance(text)) + 2.f * kBoxPaddingX);
-    const float h = etaBoxHeight();
+    const float h = etaBoxHeight(m_etaFontPointSize);
 
     QImage image(static_cast<int>(std::lround(w * devicePixelRatio)),
             static_cast<int>(std::lround(h * devicePixelRatio)),
@@ -254,7 +243,7 @@ QImage allshader::WaveformRenderNotes::bakeLabel(
     image.setDevicePixelRatio(devicePixelRatio);
     image.fill(Qt::transparent);
 
-    QColor background = m_color;
+    QColor background = m_ownScheme.bgNormal;
     background.setAlphaF(0.85f);
 
     QPainter painter(&image);
@@ -264,7 +253,7 @@ QImage allshader::WaveformRenderNotes::bakeLabel(
     painter.setBrush(background);
     painter.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 3.0, 3.0);
     painter.setFont(font);
-    painter.setPen(contrastingTextColor(background));
+    painter.setPen(m_ownScheme.fontNormal);
     painter.drawText(
             QRectF(kBoxPaddingX, kBoxPaddingY, w - 2.f * kBoxPaddingX, h - 2.f * kBoxPaddingY),
             Qt::AlignLeft | Qt::AlignVCenter,
@@ -274,26 +263,22 @@ QImage allshader::WaveformRenderNotes::bakeLabel(
     return image;
 }
 
-QColor allshader::WaveformRenderNotes::etaContrastColor() const {
-    return m_etaContrastColor.isValid() ? m_etaContrastColor
-                                        : complementaryColor(m_color);
-}
-
 QImage allshader::WaveformRenderNotes::bakeEtaBar(const QString& content,
         float fieldWidth,
         float totalWidth,
         float opacity,
         const QColor& bgColor,
         const QColor& fontColor,
+        double fontPointSize,
         float devicePixelRatio) const {
     QString text = content.simplified();
     if (text.isEmpty()) {
         text = QStringLiteral("(empty)");
     }
 
-    const QFont font = etaFont();
+    const QFont font = etaFont(fontPointSize);
     const QFontMetricsF metrics{font};
-    const float h = etaBoxHeight();
+    const float h = etaBoxHeight(fontPointSize);
 
     // One continuous bar: [ countdown field | inner gap | content | padding ].
     // The field region (width fieldWidth, on the left) is left empty here; the
@@ -322,7 +307,7 @@ QImage allshader::WaveformRenderNotes::bakeEtaBar(const QString& content,
     painter.drawRoundedRect(QRectF(0.5, 0.5, totalWidth - 1.0, h - 1.0), 3.0, 3.0);
     painter.setFont(font);
     painter.setPen(textColor);
-    painter.drawText(QPointF(contentX, etaBaselineY()), text);
+    painter.drawText(QPointF(contentX, etaBaselineY(fontPointSize)), text);
     painter.end();
 
     return image;
@@ -337,14 +322,15 @@ allshader::WaveformRenderNotes::ensureEtaBarSlot(
         float totalWidth,
         float opacity,
         float devicePixelRatio) {
-    const QColor contrastColor = etaContrastColor();
     const auto bakeNeutral = [&]() {
-        return bakeEtaBar(content, fieldWidth, totalWidth, opacity, m_color,
-                contrastingTextColor(m_color), devicePixelRatio);
+        return bakeEtaBar(content, fieldWidth, totalWidth, opacity,
+                m_ownScheme.bgNormal, m_ownScheme.fontNormal,
+                m_etaFontPointSize, devicePixelRatio);
     };
     const auto bakeContrast = [&]() {
-        return bakeEtaBar(content, fieldWidth, totalWidth, opacity, contrastColor,
-                contrastingTextColor(contrastColor), devicePixelRatio);
+        return bakeEtaBar(content, fieldWidth, totalWidth, opacity,
+                m_ownScheme.bgContrast, m_ownScheme.fontContrast,
+                m_etaFontPointSize, devicePixelRatio);
     };
 
     // Grow the pool up to `index`. Because update() requests the slots in order
@@ -362,8 +348,8 @@ allshader::WaveformRenderNotes::ensureEtaBarSlot(
         slot.totalWidth = totalWidth;
         slot.opacity = opacity;
         slot.devicePixelRatio = devicePixelRatio;
-        slot.color = m_color;
-        slot.contrastColor = contrastColor;
+        slot.fontPointSize = m_etaFontPointSize;
+        slot.scheme = m_ownScheme;
         m_etaBarSlots.push_back(slot);
         m_pEtaBarNodesParent->appendChildNode(std::move(pNode));
         m_pEtaBarNodesParent->appendChildNode(std::move(pContrastNode));
@@ -371,8 +357,8 @@ allshader::WaveformRenderNotes::ensureEtaBarSlot(
     EtaBarSlot& slot = m_etaBarSlots[index];
     if (slot.content != content || slot.fieldWidth != fieldWidth ||
             slot.totalWidth != totalWidth || slot.opacity != opacity ||
-            slot.devicePixelRatio != devicePixelRatio || slot.color != m_color ||
-            slot.contrastColor != contrastColor) {
+            slot.devicePixelRatio != devicePixelRatio ||
+            slot.fontPointSize != m_etaFontPointSize || slot.scheme != m_ownScheme) {
         slot.pNode->updateTexture(pContext, bakeNeutral());
         slot.pContrastNode->updateTexture(pContext, bakeContrast());
         slot.content = content;
@@ -380,8 +366,8 @@ allshader::WaveformRenderNotes::ensureEtaBarSlot(
         slot.totalWidth = totalWidth;
         slot.opacity = opacity;
         slot.devicePixelRatio = devicePixelRatio;
-        slot.color = m_color;
-        slot.contrastColor = contrastColor;
+        slot.fontPointSize = m_etaFontPointSize;
+        slot.scheme = m_ownScheme;
     }
     return slot;
 }
@@ -441,6 +427,38 @@ void allshader::WaveformRenderNotes::update() {
     // to click). Used by noteAtPoint() for the editor's hit-testing.
     m_noteHitBoxes.clear();
 
+    // Pull the latest preferences (concept section 9) so changes apply next frame.
+    refreshSettings();
+
+    const auto hideAllEtaNodes = [this]() {
+        for (auto& slot : m_etaBarSlots) {
+            if (slot.pNode) {
+                slot.pNode->hideQuad();
+            }
+            if (slot.pContrastNode) {
+                slot.pContrastNode->hideQuad();
+            }
+        }
+        for (auto* pDigits : m_etaDigitNodes) {
+            pDigits->clear();
+        }
+        for (auto* pDigits : m_etaDigitContrastNodes) {
+            pDigits->clear();
+        }
+    };
+
+    // Master visibility switch (concept section 9): when off, the plugin draws
+    // nothing on the waveform (the only entry point left is the settings page).
+    if (!m_etaEnabled) {
+        m_pLinesNode->geometry().allocate(0);
+        m_pLinesNode->markDirtyGeometry();
+        for (auto* pLabel : m_labelNodes) {
+            pLabel->hideQuad();
+        }
+        hideAllEtaNodes();
+        return;
+    }
+
     // --- marker lines: one vertical rectangle per note (like WaveformRenderBeat).
     // Drawn after the beat grid (see waveformwidget.cpp), so they cover grid lines
     // they sit on. While playing they take the indicator's contrast color (so the
@@ -465,7 +483,8 @@ void allshader::WaveformRenderNotes::update() {
             vertexUpdater.addRectangle({x, 0.f}, {x + 1.f, breadth});
         }
         m_pLinesNode->markDirtyGeometry();
-        m_pLinesNode->material().setUniform(1, playing ? etaContrastColor() : m_color);
+        m_pLinesNode->material().setUniform(
+                1, playing ? m_ownScheme.bgContrast : m_ownScheme.bgNormal);
         m_pLinesNode->markDirtyMaterial();
     }
 
@@ -477,11 +496,15 @@ void allshader::WaveformRenderNotes::update() {
     }
     if (contents != m_cachedContents ||
             devicePixelRatio != m_cachedDevicePixelRatio ||
-            breadth != m_cachedBreadth) {
+            breadth != m_cachedBreadth ||
+            m_etaFontPointSize != m_cachedFontPointSize ||
+            m_ownScheme != m_cachedOwnScheme) {
         rebuildLabels(notes, devicePixelRatio);
         m_cachedContents = contents;
         m_cachedDevicePixelRatio = devicePixelRatio;
         m_cachedBreadth = breadth;
+        m_cachedFontPointSize = m_etaFontPointSize;
+        m_cachedOwnScheme = m_ownScheme;
     }
 
     DEBUG_ASSERT(m_labelNodes.size() == static_cast<size_t>(notes.size()));
@@ -491,23 +514,6 @@ void allshader::WaveformRenderNotes::update() {
     const double playPosition =
             m_waveformRenderer->getTruePosSample(::WaveformRendererAbstract::Play);
 
-    const auto hideAllEtaNodes = [this]() {
-        for (auto& slot : m_etaBarSlots) {
-            if (slot.pNode) {
-                slot.pNode->hideQuad();
-            }
-            if (slot.pContrastNode) {
-                slot.pContrastNode->hideQuad();
-            }
-        }
-        for (auto* pDigits : m_etaDigitNodes) {
-            pDigits->clear();
-        }
-        for (auto* pDigits : m_etaDigitContrastNodes) {
-            pDigits->clear();
-        }
-    };
-
     // --- standing view (concept section 6): labels anchored at their timecode.
     // Overlapping labels are stacked downward so they don't cover each other:
     // earliest-arriving on top, later ones slid underneath, but never past the
@@ -515,7 +521,7 @@ void allshader::WaveformRenderNotes::update() {
     // x-ranges don't overlap all stay on the top row, so the common (sparse)
     // case looks unchanged.
     if (!playing) {
-        const float boxHeight = etaBoxHeight();
+        const float boxHeight = etaBoxHeight(m_etaFontPointSize);
         const int maxRows = std::max(1,
                 static_cast<int>(std::floor(
                         (breadth - kStackTopMargin + kStackGap) /
@@ -654,15 +660,15 @@ void allshader::WaveformRenderNotes::update() {
     });
 
     auto* pContext = m_waveformRenderer->getContext();
-    const float boxHeight = etaBoxHeight();
-    const QColor textColor = contrastingTextColor(m_color);
+    const float boxHeight = etaBoxHeight(m_etaFontPointSize);
+    const QColor textColor = m_ownScheme.fontNormal;
 
     // Shared digit atlas params (font, height, color). ensureEtaDigitNode(0) gives
     // us a node to measure the countdown-field columns with; updateTexture is a
     // no-op when the params are unchanged, so building all nodes is cheap.
     DigitsRenderNode* pAtlas = ensureEtaDigitNode(0);
     pAtlas->updateTexture(pContext,
-            static_cast<float>(kEtaFontPointSize),
+            static_cast<float>(m_etaFontPointSize),
             boxHeight,
             devicePixelRatio,
             textColor,
@@ -695,7 +701,7 @@ void allshader::WaveformRenderNotes::update() {
     // 9) so it fills equally across notes; with a content-sized bar it is disabled.
     const bool fixedWidth = m_etaNoteWidthPx > 0.f;
     const bool indicatorEnabled = fixedWidth && m_etaWindowBeats > 0;
-    const QColor contrastFontColor = contrastingTextColor(etaContrastColor());
+    const QColor contrastFontColor = m_ownScheme.fontContrast;
 
     int shown = 0;
     for (int k = 0; k < static_cast<int>(items.size()); ++k) {
@@ -715,7 +721,7 @@ void allshader::WaveformRenderNotes::update() {
             if (t.isEmpty()) {
                 t = QStringLiteral("(empty)");
             }
-            const QFontMetricsF metrics{etaFont()};
+            const QFontMetricsF metrics{etaFont(m_etaFontPointSize)};
             totalWidth = fieldWidth + kEtaInnerGap +
                     std::ceil(static_cast<float>(metrics.horizontalAdvance(t))) +
                     kBoxPaddingX;
@@ -752,14 +758,14 @@ void allshader::WaveformRenderNotes::update() {
         DigitsRenderNode* pDigits = ensureEtaDigitNode(k);
         DigitsRenderNode* pDigitsContrast = ensureEtaDigitContrastNode(k);
         pDigits->updateTexture(pContext,
-                static_cast<float>(kEtaFontPointSize),
+                static_cast<float>(m_etaFontPointSize),
                 boxHeight,
                 devicePixelRatio,
                 textColor,
                 /*withOutline=*/false,
                 /*fontFamily=*/QString());
         pDigitsContrast->updateTexture(pContext,
-                static_cast<float>(kEtaFontPointSize),
+                static_cast<float>(m_etaFontPointSize),
                 boxHeight,
                 devicePixelRatio,
                 contrastFontColor,
@@ -781,7 +787,7 @@ void allshader::WaveformRenderNotes::update() {
             const float digitsX =
                     roundToPixel(blockLeft + kFieldPadX + (beatsColWidth - beatsWidth));
             const float digitsY =
-                    roundToPixel(boxTop + etaBaselineY() - pDigits->baseline());
+                    roundToPixel(boxTop + etaBaselineY(m_etaFontPointSize) - pDigits->baseline());
             // Draw the same digits twice, clipped at the fill boundary: neutral on
             // the not-yet-reached (left) part, contrast on the filled (right) part.
             pDigits->updateClipped(digitsX, digitsY, false, beatsStr, timeStr,

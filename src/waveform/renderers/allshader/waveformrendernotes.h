@@ -11,6 +11,7 @@
 #include "rendergraph/node.h"
 #include "track/track.h"
 #include "util/class.h"
+#include "waveform/etanotecolors.h"
 #include "waveform/renderers/waveformrendererabstract.h"
 
 class QDomNode;
@@ -78,58 +79,12 @@ class allshader::WaveformRenderNotes final
     // returns null. Searched front-to-back so the topmost note wins.
     NotePointer noteAtPoint(QPointF point) const;
 
-  public slots:
-    void setColor(const QColor& color) {
-        m_color = color;
-    }
-    // Live-ETA options (concept section 7). For now driven by these slots /
-    // defaults; the preferences UI is wired up in the later settings phase (2d).
-    void setEtaShowBeats(bool show) {
-        m_etaShowBeats = show;
-    }
-    void setEtaShowTime(bool show) {
-        m_etaShowTime = show;
-    }
-    // false: the note's left edge sits at the play marker (note reaches into the
-    //        future/right side, on top of the upcoming waveform) -- concept default.
-    // true:  the note's right edge sits at the play marker (note sits in the
-    //        "past"/left side, keeping the upcoming waveform readable).
-    void setEtaAlignRightEdgeAtPlayhead(bool alignRight) {
-        m_etaAlignRightEdgeAtPlayhead = alignRight;
-    }
-    // Live-ETA preview window length, in beats (concept section 7
-    // "Vorschaufenster", e.g. 64). Only notes arriving within this many beats are
-    // shown in the live view; <= 0 means no limit. Same unit as the countdown.
-    void setEtaWindowBeats(int beats) {
-        m_etaWindowBeats = beats;
-    }
-    // How long, in beats, a note keeps lingering (dimmed) after it has passed the
-    // play marker before it is hidden (concept section 7 "Nachleuchten"). <= 0
-    // disables the afterglow.
-    void setEtaAfterglowBeats(int beats) {
-        m_etaAfterglowBeats = beats;
-    }
-    // Opacity (0..1) of a note while it lingers after passing the play marker
-    // (concept section 7 "Nachleuchten"). Kept fairly opaque so the text stays
-    // readable; the preferences UI in phase 2d will drive this.
-    void setEtaAfterglowOpacity(float opacity) {
-        m_etaAfterglowOpacity = opacity;
-    }
-    // Fixed live-ETA bar width in logical pixels (concept section 9). Needed so
-    // the proximity indicator fills equally across notes; content wider than the
-    // bar is elided (wrapping is a later step). <= 0 falls back to a content-sized
-    // bar, which disables the indicator.
-    void setEtaNoteWidthPx(float widthPx) {
-        m_etaNoteWidthPx = widthPx;
-    }
-    // Contrast color of the proximity indicator (concept sections 7/9), which
-    // fills the bar from the right as the note approaches. An invalid color (the
-    // default) derives a complementary color from the note color.
-    void setEtaContrastColor(const QColor& color) {
-        m_etaContrastColor = color;
-    }
-
   private:
+    // Pulls the current ETA Notes settings (concept section 9) from the
+    // WaveformWidgetFactory singleton into the members below. Called at the top
+    // of update() each frame, so preferences changes take effect immediately.
+    void refreshSettings();
+
     QImage bakeLabel(const QString& content, float devicePixelRatio) const;
     // Bakes one live-ETA bar texture: a rounded box (width totalWidth, color
     // bgColor) with an empty countdown field on the left (width fieldWidth, where
@@ -143,10 +98,8 @@ class allshader::WaveformRenderNotes final
             float opacity,
             const QColor& bgColor,
             const QColor& fontColor,
+            double fontPointSize,
             float devicePixelRatio) const;
-    // The indicator's contrast color: the configured one, or a complementary color
-    // derived from the note color when none is set.
-    QColor etaContrastColor() const;
     void rebuildLabels(const QList<NotePointer>& notes, float devicePixelRatio);
 
     // Computes the (signed) beats and seconds from the play position to a note
@@ -160,8 +113,6 @@ class allshader::WaveformRenderNotes final
             double* beatsExact,
             double* timeSec) const;
 
-    QColor m_color;
-
     rendergraph::GeometryNode* m_pLinesNode{};
     rendergraph::Node* m_pLabelNodesParent{};
     rendergraph::Node* m_pEtaBarNodesParent{};
@@ -173,6 +124,8 @@ class allshader::WaveformRenderNotes final
     QStringList m_cachedContents;
     float m_cachedDevicePixelRatio{0.f};
     float m_cachedBreadth{0.f};
+    double m_cachedFontPointSize{0.0};
+    EtaNoteColorScheme m_cachedOwnScheme;
 
     // Hit-test geometry for the editor, rebuilt every frame in the standing view
     // (empty while playing). Each entry pairs a note with its label rectangle and
@@ -188,8 +141,8 @@ class allshader::WaveformRenderNotes final
     // matching countdown-digits node, stacked vertically at the play marker. The
     // pools grow on demand -- creating a texture needs a current GL context, so
     // the nodes are created in update(); unused slots are hidden, never destroyed.
-    // A bar is re-baked only when its content, field width, opacity, dpr or color
-    // changes; the digits are repositioned every frame.
+    // A bar is re-baked only when its content, field width, opacity, dpr, font
+    // size or colors change; the digits are repositioned every frame.
     struct EtaBarSlot {
         NoteLabelNode* pNode{};         // neutral bar (drawn in full)
         NoteLabelNode* pContrastNode{}; // contrast bar (clipped to the filled part)
@@ -198,8 +151,8 @@ class allshader::WaveformRenderNotes final
         float totalWidth{-1.f};
         float opacity{-1.f};
         float devicePixelRatio{0.f};
-        QColor color;
-        QColor contrastColor;
+        double fontPointSize{-1.0};
+        EtaNoteColorScheme scheme;
     };
     std::vector<EtaBarSlot> m_etaBarSlots;
     // Countdown digits per note, drawn twice and clipped at the proximity fill
@@ -218,9 +171,17 @@ class allshader::WaveformRenderNotes final
     DigitsRenderNode* ensureEtaDigitNode(int index);
     DigitsRenderNode* ensureEtaDigitContrastNode(int index);
 
-    // Live-ETA state and options.
+    // Live-ETA control proxies (the play state selects the display mode).
     std::unique_ptr<ControlProxy> m_pPlayControl;
     std::unique_ptr<ControlProxy> m_pTimeRemainingControl;
+
+    // ETA Notes settings (concept section 9), refreshed from the
+    // WaveformWidgetFactory each frame in refreshSettings(). m_ownScheme holds the
+    // four colors for the deck's own notes (background/font, normal/contrast); the
+    // per-deck schemes for transition notes are applied in phase 2e.
+    bool m_etaEnabled{true};
+    double m_etaFontPointSize{10.0};
+    EtaNoteColorScheme m_ownScheme{etaDefaultColorScheme(EtaColorCase::Own)};
     bool m_etaShowBeats{true};
     bool m_etaShowTime{true};
     bool m_etaAlignRightEdgeAtPlayhead{false};
@@ -228,7 +189,6 @@ class allshader::WaveformRenderNotes final
     int m_etaAfterglowBeats{4};
     float m_etaAfterglowOpacity{0.6f};
     float m_etaNoteWidthPx{360.f};
-    QColor m_etaContrastColor; // invalid -> derived from m_color
 
     DISALLOW_COPY_AND_ASSIGN(WaveformRenderNotes);
 };

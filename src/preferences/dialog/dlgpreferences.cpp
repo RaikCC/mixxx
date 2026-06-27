@@ -35,6 +35,7 @@
 #endif // __BROADCAST__
 
 #include "preferences/dialog/dlgprefbeats.h"
+#include "preferences/dialog/dlgprefetanotes.h"
 #include "preferences/dialog/dlgprefkey.h"
 #include "preferences/dialog/dlgprefrecord.h"
 #include "preferences/dialog/dlgprefreplaygain.h"
@@ -236,6 +237,14 @@ DlgPreferences::DlgPreferences(
             tr("Modplug Decoder"),
             "ic_preferences_modplug.svg");
 #endif // __MODPLUG__
+
+    // ETA Notes settings page (concept section 9): no add-on button, so it lives
+    // as a normal page at the end of the preferences tree.
+    addPageWidget(PreferencesPage(
+                          new DlgPrefEtaNotes(this, m_pConfig),
+                          new QTreeWidgetItem(contentsTreeWidget, QTreeWidgetItem::Type)),
+            tr("ETA Notes"),
+            "ic_preferences_etanotes.svg");
 
     // Find accept and apply buttons
     const auto buttons = buttonBox->buttons();

@@ -533,6 +533,11 @@ void WWaveformViewer::createNoteAt(const QPoint& widgetPos, const QPoint& global
     if (!m_waveformWidget) {
         return;
     }
+    // Authoring is unavailable while the notes display is switched off entirely
+    // (concept section 9 master switch); nothing would be visible.
+    if (!WaveformWidgetFactory::instance()->getEtaNotesEnabled()) {
+        return;
+    }
     const TrackPointer pTrack = m_waveformWidget->getTrackInfo();
     if (!pTrack) {
         return;
@@ -599,6 +604,9 @@ void WWaveformViewer::openNoteEditor(
 void WWaveformViewer::showNoteContextMenu(
         const QPoint& widgetPos, const QPoint& globalPos) {
     if (!m_waveformWidget) {
+        return;
+    }
+    if (!WaveformWidgetFactory::instance()->getEtaNotesEnabled()) {
         return;
     }
     NotePointer pNote = m_waveformWidget->getNoteLabelAtPoint(widgetPos);

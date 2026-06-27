@@ -9,6 +9,7 @@
 #include "skin/legacy/skincontext.h"
 #include "util/performancetimer.h"
 #include "util/singleton.h"
+#include "waveform/etanotecolors.h"
 #include "waveform/renderers/allshader/waveformrenderersignalbase.h"
 #include "waveform/widgets/waveformwidgettype.h"
 #include "waveform/widgets/waveformwidgetvars.h"
@@ -205,6 +206,51 @@ class WaveformWidgetFactory : public QObject,
     static float toUntilMarkTextHeightLimit(int index);
     static int toUntilMarkTextHeightLimitIndex(float value);
 
+    // ETA Notes settings (concept section 9). Stored here and persisted to the
+    // [EtaNotes] config group; allshader::WaveformRenderNotes reads them from
+    // this singleton each frame, so changes from the preferences page take
+    // effect on the next rendered frame. See setEtaColorScheme for the colors.
+    bool getEtaNotesEnabled() const {
+        return m_etaNotesEnabled;
+    }
+    void setEtaNotesEnabled(bool value);
+    double getEtaFontPointSize() const {
+        return m_etaFontPointSize;
+    }
+    void setEtaFontPointSize(double value);
+    bool getEtaShowBeats() const {
+        return m_etaShowBeats;
+    }
+    void setEtaShowBeats(bool value);
+    bool getEtaShowTime() const {
+        return m_etaShowTime;
+    }
+    void setEtaShowTime(bool value);
+    bool getEtaAlignRightEdgeAtPlayhead() const {
+        return m_etaAlignRightEdgeAtPlayhead;
+    }
+    void setEtaAlignRightEdgeAtPlayhead(bool value);
+    int getEtaWindowBeats() const {
+        return m_etaWindowBeats;
+    }
+    void setEtaWindowBeats(int value);
+    double getEtaNoteWidthPx() const {
+        return m_etaNoteWidthPx;
+    }
+    void setEtaNoteWidthPx(double value);
+    int getEtaAfterglowBeats() const {
+        return m_etaAfterglowBeats;
+    }
+    void setEtaAfterglowBeats(int value);
+    double getEtaAfterglowOpacity() const {
+        return m_etaAfterglowOpacity;
+    }
+    void setEtaAfterglowOpacity(double value);
+    const EtaNoteColorScheme& getEtaColorScheme(EtaColorCase colorCase) const {
+        return m_etaColorSchemes[static_cast<int>(colorCase)];
+    }
+    void setEtaColorScheme(EtaColorCase colorCase, const EtaNoteColorScheme& scheme);
+
     /// Returns the desired surface format for the OpenGLWindow
     static QSurfaceFormat getSurfaceFormat(UserSettingsPointer pConfig = nullptr);
 
@@ -330,6 +376,22 @@ class WaveformWidgetFactory : public QObject,
     Qt::Alignment m_untilMarkAlign;
     int m_untilMarkTextPointSize;
     float m_untilMarkTextHeightLimit;
+
+    // Loads the ETA Notes settings from the [EtaNotes] config group (called from
+    // setConfig); seeds the defaults into a fresh config file.
+    void loadEtaNotesSettings();
+
+    // ETA Notes settings (concept section 9), loaded from config in setConfig().
+    bool m_etaNotesEnabled;
+    double m_etaFontPointSize;
+    bool m_etaShowBeats;
+    bool m_etaShowTime;
+    bool m_etaAlignRightEdgeAtPlayhead;
+    int m_etaWindowBeats;
+    double m_etaNoteWidthPx;
+    int m_etaAfterglowBeats;
+    double m_etaAfterglowOpacity;
+    std::array<EtaNoteColorScheme, kNumEtaColorCases> m_etaColorSchemes;
 
     bool m_stemReorderOnChange;
     float m_stemOutlineOpacity;
