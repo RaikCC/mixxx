@@ -156,13 +156,13 @@ void DlgPrefEtaNotes::slotResetToDefaults() {
     // Update the widgets to the built-in defaults; the user commits with Apply.
     m_pEnabled->setChecked(true);
     m_pShowBeats->setChecked(true);
-    m_pShowTime->setChecked(true);
+    m_pShowTime->setChecked(false);
     m_pAlignRight->setChecked(false);
     m_pFontSize->setValue(10.0);
-    m_pWindowBeats->setValue(64);
-    m_pNoteWidth->setValue(360.0);
-    m_pAfterglowBeats->setValue(4);
-    m_pAfterglowOpacity->setValue(0.6);
+    m_pWindowBeats->setValue(32);
+    m_pNoteWidth->setValue(240.0);
+    m_pAfterglowBeats->setValue(6);
+    m_pAfterglowOpacity->setValue(0.7);
     for (int c = 0; c < kNumEtaColorCases; ++c) {
         const auto colorCase = static_cast<EtaColorCase>(c);
         setSchemeOnButtons(colorCase, etaDefaultColorScheme(colorCase));

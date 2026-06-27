@@ -73,21 +73,30 @@ inline EtaNoteColorScheme etaSchemeFromBase(const QColor& base) {
     return scheme;
 }
 
-/// The default scheme for each case. "Own" keeps the historic amber so existing
-/// installations look unchanged; decks 1-4 get distinct hues (only visible once
-/// phase 2e shows inter-deck notes).
+/// The default scheme for each case {bgNormal, bgContrast, fontNormal,
+/// fontContrast}. These are the out-of-the-box colors a fresh install gets (and
+/// what the preferences "Reset to defaults" restores): light, low-saturation
+/// backgrounds with a dark font, each deck a distinct hue, hand-tuned by the user
+/// (Raik) on 2026-06-27. etaSchemeFromBase() above remains available for deriving
+/// a scheme from a single base color.
 inline EtaNoteColorScheme etaDefaultColorScheme(EtaColorCase colorCase) {
     switch (colorCase) {
     case EtaColorCase::Own:
-        return etaSchemeFromBase(QColor(255, 200, 0)); // amber
+        return {QColor(0xF1, 0xF1, 0xF1), QColor(0xAA, 0x92, 0x09),
+                QColor(0x28, 0x28, 0x28), QColor(0xFF, 0xFF, 0xFF)};
     case EtaColorCase::Deck1:
-        return etaSchemeFromBase(QColor(0xC0, 0x39, 0x2B)); // red
+        return {QColor(0xB8, 0xE2, 0xA4), QColor(0x2E, 0xB0, 0x07),
+                QColor(0x28, 0x28, 0x28), QColor(0xFF, 0xFF, 0xFF)};
     case EtaColorCase::Deck2:
-        return etaSchemeFromBase(QColor(0x27, 0xAE, 0x60)); // green
+        return {QColor(0xA2, 0xE2, 0xE2), QColor(0x25, 0x30, 0xFF),
+                QColor(0x28, 0x28, 0x28), QColor(0xFF, 0xFF, 0xFF)};
     case EtaColorCase::Deck3:
-        return etaSchemeFromBase(QColor(0x29, 0x80, 0xB9)); // blue
+        return {QColor(0xE1, 0xE2, 0xA3), QColor(0xEB, 0xD7, 0x00),
+                QColor(0x28, 0x28, 0x28), QColor(0x00, 0x00, 0x00)};
     case EtaColorCase::Deck4:
-        return etaSchemeFromBase(QColor(0x8E, 0x44, 0xAD)); // purple
+        return {QColor(0xFF, 0xCD, 0xD9), QColor(0xFF, 0x60, 0xC2),
+                QColor(0x28, 0x28, 0x28), QColor(0xFF, 0xFF, 0xFF)};
     }
-    return etaSchemeFromBase(QColor(255, 200, 0));
+    return {QColor(0xF1, 0xF1, 0xF1), QColor(0xAA, 0x92, 0x09),
+            QColor(0x28, 0x28, 0x28), QColor(0xFF, 0xFF, 0xFF)};
 }

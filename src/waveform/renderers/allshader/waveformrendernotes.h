@@ -209,12 +209,12 @@ class allshader::WaveformRenderNotes final
             etaDefaultColorScheme(EtaColorCase::Deck3),
             etaDefaultColorScheme(EtaColorCase::Deck4)};
     bool m_etaShowBeats{true};
-    bool m_etaShowTime{true};
+    bool m_etaShowTime{false};
     bool m_etaAlignRightEdgeAtPlayhead{false};
-    int m_etaWindowBeats{64};
-    int m_etaAfterglowBeats{4};
-    float m_etaAfterglowOpacity{0.6f};
-    float m_etaNoteWidthPx{360.f};
+    int m_etaWindowBeats{32};
+    int m_etaAfterglowBeats{6};
+    float m_etaAfterglowOpacity{0.7f};
+    float m_etaNoteWidthPx{240.f};
 
     DISALLOW_COPY_AND_ASSIGN(WaveformRenderNotes);
 };
