@@ -1,14 +1,19 @@
 #include "waveform/renderers/allshader/waveformrendernotes.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QDomNode>
 #include <QFontMetricsF>
 #include <QPainter>
+#include <QPalette>
+#include <QRegularExpression>
+#include <QTextDocument>
 #include <QVector4D>
 #include <algorithm>
 #include <cmath>
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <utility>
 
 #include "control/controlproxy.h"
 #include "mixer/playerinfo.h"
@@ -125,14 +130,73 @@ float etaBoxHeight(double pointSize) {
     return std::ceil(static_cast<float>(metrics.height()) + 2.f * kBoxPaddingY);
 }
 
-// Text baseline (logical px from the top of a note box) for the note font, so
-// the countdown digits and the content text can share a single baseline.
-float etaBaselineY(double pointSize) {
+// Baseline (logical px from the top of a box of height boxHeight) that places a
+// single line of text vertically centered in the box. Used for the countdown
+// digits so they stay centered even when the content wraps the bar taller.
+float etaCenteredBaselineY(double pointSize, float boxHeight) {
     const QFontMetricsF metrics{etaFont(pointSize)};
-    return etaBoxHeight(pointSize) / 2.f +
+    return boxHeight / 2.f +
             (static_cast<float>(metrics.ascent()) -
                     static_cast<float>(metrics.descent())) /
                     2.f;
+}
+
+// Converts the inline markdown a note may contain -- **bold**, *italic* and
+// ***both*** -- into the matching HTML on a single, already HTML-escaped line.
+// Longest delimiter first so ***...*** is consumed before ** and *. Other
+// markdown (headings, lists, ...) is intentionally not interpreted.
+QString markdownInlineToHtml(const QString& line) {
+    QString html = line.toHtmlEscaped();
+    static const QRegularExpression boldItalic(QStringLiteral("\\*\\*\\*(.+?)\\*\\*\\*"));
+    static const QRegularExpression bold(QStringLiteral("\\*\\*(.+?)\\*\\*"));
+    static const QRegularExpression italic(QStringLiteral("\\*(.+?)\\*"));
+    html.replace(boldItalic, QStringLiteral("<b><i>\\1</i></b>"));
+    html.replace(bold, QStringLiteral("<b>\\1</b>"));
+    html.replace(italic, QStringLiteral("<i>\\1</i>"));
+    return html;
+}
+
+// Builds the HTML for a note's content: each editor line (split on '\n', kept
+// as the user typed it -- concept section 10) becomes one HTML line joined with
+// <br>, with inline markdown applied. Empty content gets a placeholder.
+QString noteContentToHtml(const QString& content) {
+    if (content.trimmed().isEmpty()) {
+        return QStringLiteral("(empty)");
+    }
+    QStringList htmlLines;
+    const QStringList lines = content.split('\n');
+    htmlLines.reserve(lines.size());
+    for (const QString& line : lines) {
+        htmlLines.append(markdownInlineToHtml(line));
+    }
+    return htmlLines.join(QStringLiteral("<br>"));
+}
+
+// Lays out a note's content in a QTextDocument with the note font. A textWidth
+// > 0 wraps the content to it (the live-ETA bar, concept section 7); otherwise
+// the document sizes to its content with no wrapping (standing labels honour
+// explicit line breaks but are not wrapped). The caller reads doc->size() /
+// doc->idealWidth() for the resulting box dimensions.
+void layoutNoteDoc(QTextDocument* pDoc,
+        const QString& content,
+        const QFont& font,
+        double textWidth) {
+    pDoc->setDefaultFont(font);
+    pDoc->setDocumentMargin(0.0);
+    pDoc->setHtml(noteContentToHtml(content));
+    // textWidth > 0 wraps to it; otherwise lay out with no wrapping. A very large
+    // width (not -1) is used for the no-wrap case: at -1 QTextDocument falls back
+    // to its default page size and would still wrap long lines. The caller reads
+    // idealWidth() for the actual (unwrapped) content width.
+    pDoc->setTextWidth(textWidth > 0.0 ? textWidth : 100000.0);
+}
+
+// Draws an already laid-out document at the painter's current origin, in the
+// given color (applied to text that does not set its own).
+void drawNoteDoc(QPainter* pPainter, QTextDocument* pDoc, const QColor& color) {
+    QAbstractTextDocumentLayout::PaintContext ctx;
+    ctx.palette.setColor(QPalette::Text, color);
+    pDoc->documentLayout()->draw(pPainter, ctx);
 }
 
 // Format a duration as "m:ss.cc" for the ETA countdown (copied from
@@ -255,17 +319,17 @@ std::optional<EtaNoteColorScheme> allshader::WaveformRenderNotes::schemeForNote(
 QImage allshader::WaveformRenderNotes::bakeLabel(const QString& content,
         const EtaNoteColorScheme& scheme,
         float devicePixelRatio) const {
-    QString text = content.simplified(); // single line for now; markdown later
-    if (text.isEmpty()) {
-        text = QStringLiteral("(empty)"); // placeholder for an empty note
-    }
-
     const QFont font = etaFont(m_etaFontPointSize);
-    const QFontMetricsF metrics{font};
 
-    const float w = std::ceil(
-            static_cast<float>(metrics.horizontalAdvance(text)) + 2.f * kBoxPaddingX);
-    const float h = etaBoxHeight(m_etaFontPointSize);
+    // Standing label: honour explicit line breaks and inline markdown, but do
+    // not wrap -- the box sizes to the content (concept sections 6 and 10).
+    QTextDocument doc;
+    layoutNoteDoc(&doc, content, font, /*textWidth=*/-1.0);
+    const float contentW = std::ceil(static_cast<float>(doc.idealWidth()));
+    const float contentH = std::ceil(static_cast<float>(doc.size().height()));
+
+    const float w = contentW + 2.f * kBoxPaddingX;
+    const float h = std::max(etaBoxHeight(m_etaFontPointSize), contentH + 2.f * kBoxPaddingY);
 
     QImage image(static_cast<int>(std::lround(w * devicePixelRatio)),
             static_cast<int>(std::lround(h * devicePixelRatio)),
@@ -282,12 +346,9 @@ QImage allshader::WaveformRenderNotes::bakeLabel(const QString& content,
     painter.setPen(Qt::NoPen);
     painter.setBrush(background);
     painter.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 3.0, 3.0);
-    painter.setFont(font);
-    painter.setPen(scheme.fontNormal);
-    painter.drawText(
-            QRectF(kBoxPaddingX, kBoxPaddingY, w - 2.f * kBoxPaddingX, h - 2.f * kBoxPaddingY),
-            Qt::AlignLeft | Qt::AlignVCenter,
-            text);
+    // Content block vertically centered in the box.
+    painter.translate(kBoxPaddingX, (h - contentH) / 2.f);
+    drawNoteDoc(&painter, &doc, scheme.fontNormal);
     painter.end();
 
     return image;
@@ -301,22 +362,20 @@ QImage allshader::WaveformRenderNotes::bakeEtaBar(const QString& content,
         const QColor& fontColor,
         double fontPointSize,
         float devicePixelRatio) const {
-    QString text = content.simplified();
-    if (text.isEmpty()) {
-        text = QStringLiteral("(empty)");
-    }
-
     const QFont font = etaFont(fontPointSize);
-    const QFontMetricsF metrics{font};
-    const float h = etaBoxHeight(fontPointSize);
 
     // One continuous bar: [ countdown field | inner gap | content | padding ].
     // The field region (width fieldWidth, on the left) is left empty here; the
-    // live digits are drawn on top of it each frame. The content is elided to the
-    // remaining width (wrapping is a later step).
+    // live digits are drawn on top of it each frame. The content wraps to the
+    // remaining width and the box grows taller as needed (concept sections 7/10);
+    // it is top-aligned so its first line shares the countdown digits' baseline.
     const float contentX = fieldWidth + kEtaInnerGap;
-    const float contentWidth = std::max(0.f, totalWidth - contentX - kBoxPaddingX);
-    text = metrics.elidedText(text, Qt::ElideRight, contentWidth);
+    const float contentWidth = std::max(1.f, totalWidth - contentX - kBoxPaddingX);
+
+    QTextDocument doc;
+    layoutNoteDoc(&doc, content, font, contentWidth);
+    const float contentH = std::ceil(static_cast<float>(doc.size().height()));
+    const float h = std::max(etaBoxHeight(fontPointSize), contentH + 2.f * kBoxPaddingY);
 
     QImage image(static_cast<int>(std::lround(totalWidth * devicePixelRatio)),
             static_cast<int>(std::lround(h * devicePixelRatio)),
@@ -335,9 +394,8 @@ QImage allshader::WaveformRenderNotes::bakeEtaBar(const QString& content,
     painter.setPen(Qt::NoPen);
     painter.setBrush(background);
     painter.drawRoundedRect(QRectF(0.5, 0.5, totalWidth - 1.0, h - 1.0), 3.0, 3.0);
-    painter.setFont(font);
-    painter.setPen(textColor);
-    painter.drawText(QPointF(contentX, etaBaselineY(fontPointSize)), text);
+    painter.translate(contentX, kBoxPaddingY);
+    drawNoteDoc(&painter, &doc, textColor);
     painter.end();
 
     return image;
@@ -587,18 +645,13 @@ void allshader::WaveformRenderNotes::update() {
     // x-ranges don't overlap all stay on the top row, so the common (sparse)
     // case looks unchanged.
     if (!playing) {
-        const float boxHeight = etaBoxHeight(m_etaFontPointSize);
-        const int maxRows = std::max(1,
-                static_cast<int>(std::floor(
-                        (breadth - kStackTopMargin + kStackGap) /
-                        (boxHeight + kStackGap))));
-
         // Drawable labels (valid position) with their geometry, processed in
         // left-to-right (= chronological) order so the earliest lands on top.
         struct StandingLabel {
             int index; // into notes / m_labelNodes
             float x;   // label box left edge (logical px)
             float width;
+            float height; // this label's own (multi-line aware) height
         };
         std::vector<StandingLabel> labels;
         labels.reserve(labelCount);
@@ -617,41 +670,56 @@ void allshader::WaveformRenderNotes::update() {
                             ::WaveformRendererAbstract::Play)) +
                     2.f);
             const float w = m_labelNodes[i]->textureWidth() / devicePixelRatio;
-            labels.push_back({i, x, w});
+            const float h = m_labelNodes[i]->textureHeight() / devicePixelRatio;
+            labels.push_back({i, x, w, h});
         }
         std::sort(labels.begin(), labels.end(),
                 [](const StandingLabel& a, const StandingLabel& b) {
                     return a.x < b.x;
                 });
 
-        // Right edge (logical px) of the last label placed in each row; a label
-        // may join a row only to the right of it (plus a small gap).
-        std::vector<float> rowRightEdge(
-                maxRows, std::numeric_limits<float>::lowest());
+        // Stack with a skyline: each label (processed left to right, so the
+        // earliest is placed first and ends up on top) is positioned as high as
+        // possible without vertically overlapping any already-placed label whose
+        // x-range overlaps it. A tall multi-line note thus only pushes down the
+        // labels it actually overlaps -- not unrelated, far-away notes that happen
+        // to share a row in a grid model (concept sections 6/10). Labels are
+        // clamped to the waveform bottom, never hidden.
+        struct PlacedBox {
+            float x0;
+            float x1;
+            float y0;
+            float y1;
+        };
+        std::vector<PlacedBox> placed;
+        placed.reserve(labels.size());
         for (const StandingLabel& label : labels) {
-            int row = -1;
-            for (int r = 0; r < maxRows; ++r) {
-                if (label.x >= rowRightEdge[r] + kStackGap) {
-                    row = r;
-                    break;
+            const float x0 = label.x;
+            const float x1 = label.x + label.width;
+            // Occupied y-intervals of already-placed labels overlapping this x.
+            std::vector<std::pair<float, float>> blockers;
+            for (const PlacedBox& p : placed) {
+                if (p.x1 + kStackGap > x0 && x1 + kStackGap > p.x0) {
+                    blockers.emplace_back(p.y0, p.y1);
                 }
             }
-            if (row < 0) {
-                // Every row is still occupied at this x: drop into the one that
-                // frees up soonest (least overlap), keeping the stack in bounds.
-                row = static_cast<int>(
-                        std::min_element(rowRightEdge.begin(), rowRightEdge.end()) -
-                        rowRightEdge.begin());
+            std::sort(blockers.begin(), blockers.end());
+            float y = kStackTopMargin;
+            for (const auto& blocker : blockers) {
+                if (y + label.height + kStackGap <= blocker.first) {
+                    break; // fits entirely above this (and all higher) blockers
+                }
+                if (y < blocker.second + kStackGap) {
+                    y = blocker.second + kStackGap; // overlaps: slide underneath it
+                }
             }
-            rowRightEdge[row] = label.x + label.width;
-            const float y = roundToPixel(
-                    kStackTopMargin + row * (boxHeight + kStackGap));
+            y = roundToPixel(
+                    std::min(y, std::max(kStackTopMargin, breadth - label.height)));
             m_labelNodes[label.index]->setQuad(label.x, y, devicePixelRatio);
-            const float h =
-                    m_labelNodes[label.index]->textureHeight() / devicePixelRatio;
             m_noteHitBoxes.push_back({notes[label.index],
-                    QRectF(label.x, y, label.width, h),
+                    QRectF(label.x, y, label.width, label.height),
                     label.x - 2.f});
+            placed.push_back({x0, x1, y, y + label.height});
         }
         hideAllEtaNodes();
         return;
@@ -776,32 +844,34 @@ void allshader::WaveformRenderNotes::update() {
     const bool indicatorEnabled = fixedWidth && m_etaWindowBeats > 0;
 
     int shown = 0;
+    // Bars stack downward from the top margin; their heights vary now that the
+    // content wraps (concept sections 7/10), so accumulate the offset instead of
+    // using a fixed pitch.
+    float stackY = kStackTopMargin;
     for (int k = 0; k < static_cast<int>(items.size()); ++k) {
-        const float boxTop = roundToPixel(kStackTopMargin + k * (boxHeight + kStackGap));
-        if (boxTop + boxHeight > breadth) {
-            // Would run past the bottom of the waveform: drop this and all the
-            // (lower) bars below it (concept section 10).
-            break;
-        }
         const EtaItem& item = items[k];
         const float opacity = item.passed ? m_etaAfterglowOpacity : 1.f;
         const QString content = notes[item.noteIndex]->getContent();
 
         float totalWidth = m_etaNoteWidthPx;
         if (!fixedWidth) {
-            QString t = content.simplified();
-            if (t.isEmpty()) {
-                t = QStringLiteral("(empty)");
-            }
-            const QFontMetricsF metrics{etaFont(m_etaFontPointSize)};
+            // No fixed width: size the bar to its widest content line (no wrap).
+            QTextDocument measureDoc;
+            layoutNoteDoc(&measureDoc, content, etaFont(m_etaFontPointSize), -1.0);
             totalWidth = fieldWidth + kEtaInnerGap +
-                    std::ceil(static_cast<float>(metrics.horizontalAdvance(t))) +
-                    kBoxPaddingX;
+                    std::ceil(static_cast<float>(measureDoc.idealWidth())) + kBoxPaddingX;
         }
 
         EtaBarSlot& slot = ensureEtaBarSlot(k, pContext, content, fieldWidth,
                 totalWidth, opacity, item.scheme, devicePixelRatio);
         const float barWidth = slot.pNode->textureWidth() / devicePixelRatio;
+        const float barHeight = slot.pNode->textureHeight() / devicePixelRatio;
+        const float boxTop = roundToPixel(stackY);
+        if (boxTop + barHeight > breadth) {
+            // Would run past the bottom of the waveform: drop this and all the
+            // (lower) bars below it (concept section 10).
+            break;
+        }
         const float blockLeft = roundToPixel(
                 m_etaAlignRightEdgeAtPlayhead ? playMarkerPos - barWidth : playMarkerPos);
         slot.pNode->setQuad(blockLeft, boxTop, devicePixelRatio);
@@ -858,8 +928,9 @@ void allshader::WaveformRenderNotes::update() {
                     beatsStr.isEmpty() ? 0.f : pDigits->measure(beatsStr, QString{}, false);
             const float digitsX =
                     roundToPixel(blockLeft + kFieldPadX + (beatsColWidth - beatsWidth));
-            const float digitsY =
-                    roundToPixel(boxTop + etaBaselineY(m_etaFontPointSize) - pDigits->baseline());
+            // Countdown vertically centered in the (possibly multi-line) bar.
+            const float digitsY = roundToPixel(boxTop +
+                    etaCenteredBaselineY(m_etaFontPointSize, barHeight) - pDigits->baseline());
             // Draw the same digits twice, clipped at the fill boundary: neutral on
             // the not-yet-reached (left) part, contrast on the filled (right) part.
             pDigits->updateClipped(digitsX, digitsY, false, beatsStr, timeStr,
@@ -867,6 +938,7 @@ void allshader::WaveformRenderNotes::update() {
             pDigitsContrast->updateClipped(digitsX, digitsY, false, beatsStr, timeStr,
                     fillBoundaryX, std::numeric_limits<float>::max());
         }
+        stackY = boxTop + barHeight + kStackGap;
         ++shown;
     }
 
