@@ -6,10 +6,12 @@
 #include <QRectF>
 #include <QStringList>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "rendergraph/node.h"
 #include "track/track.h"
+#include "track/trackid.h"
 #include "util/class.h"
 #include "waveform/etanotecolors.h"
 #include "waveform/renderers/waveformrendererabstract.h"
@@ -85,7 +87,9 @@ class allshader::WaveformRenderNotes final
     // of update() each frame, so preferences changes take effect immediately.
     void refreshSettings();
 
-    QImage bakeLabel(const QString& content, float devicePixelRatio) const;
+    QImage bakeLabel(const QString& content,
+            const EtaNoteColorScheme& scheme,
+            float devicePixelRatio) const;
     // Bakes one live-ETA bar texture: a rounded box (width totalWidth, color
     // bgColor) with an empty countdown field on the left (width fieldWidth, where
     // the live digits are drawn on top) followed by the note content (in fontColor,
@@ -100,7 +104,18 @@ class allshader::WaveformRenderNotes final
             const QColor& fontColor,
             double fontPointSize,
             float devicePixelRatio) const;
-    void rebuildLabels(const QList<NotePointer>& notes, float devicePixelRatio);
+    void rebuildLabels(const QList<NotePointer>& notes,
+            const std::vector<std::optional<EtaNoteColorScheme>>& schemes,
+            float devicePixelRatio);
+
+    // Resolves a note's color scheme (concept sections 8-10). Returns the own
+    // scheme for a normal note (no ref_track_id); for a transition note (ref
+    // set) it returns the scheme of the *other* deck that has the referenced
+    // track loaded (smallest deck index wins), or std::nullopt when the track
+    // is loaded nowhere else -- such a note is not drawn at all. deckTrackIds
+    // is the per-deck snapshot taken once per frame in update().
+    std::optional<EtaNoteColorScheme> schemeForNote(const NotePointer& pNote,
+            const std::vector<TrackId>& deckTrackIds) const;
 
     // Computes the (signed) beats and seconds from the play position to a note
     // position. Positive = upcoming, <= 0 = already passed. *beats is floored;
@@ -125,7 +140,11 @@ class allshader::WaveformRenderNotes final
     float m_cachedDevicePixelRatio{0.f};
     float m_cachedBreadth{0.f};
     double m_cachedFontPointSize{0.0};
-    EtaNoteColorScheme m_cachedOwnScheme;
+    // Per-note resolved scheme used at the last rebuild (parallel to
+    // m_cachedContents). A label re-bakes when a note's scheme changes, e.g. a
+    // transition note's referenced track is loaded on or ejected from another
+    // deck (concept section 8). std::nullopt = note not drawn.
+    std::vector<std::optional<EtaNoteColorScheme>> m_cachedSchemes;
 
     // Hit-test geometry for the editor, rebuilt every frame in the standing view
     // (empty while playing). Each entry pairs a note with its label rectangle and
@@ -167,6 +186,7 @@ class allshader::WaveformRenderNotes final
             float fieldWidth,
             float totalWidth,
             float opacity,
+            const EtaNoteColorScheme& scheme,
             float devicePixelRatio);
     DigitsRenderNode* ensureEtaDigitNode(int index);
     DigitsRenderNode* ensureEtaDigitContrastNode(int index);
@@ -177,11 +197,17 @@ class allshader::WaveformRenderNotes final
 
     // ETA Notes settings (concept section 9), refreshed from the
     // WaveformWidgetFactory each frame in refreshSettings(). m_ownScheme holds the
-    // four colors for the deck's own notes (background/font, normal/contrast); the
-    // per-deck schemes for transition notes are applied in phase 2e.
+    // four colors for the deck's own notes (background/font, normal/contrast);
+    // m_deckSchemes[0..3] are the schemes for transition notes whose referenced
+    // track sits on deck 1..4 (concept section 8, applied in schemeForNote()).
     bool m_etaEnabled{true};
     double m_etaFontPointSize{10.0};
     EtaNoteColorScheme m_ownScheme{etaDefaultColorScheme(EtaColorCase::Own)};
+    EtaNoteColorScheme m_deckSchemes[4]{
+            etaDefaultColorScheme(EtaColorCase::Deck1),
+            etaDefaultColorScheme(EtaColorCase::Deck2),
+            etaDefaultColorScheme(EtaColorCase::Deck3),
+            etaDefaultColorScheme(EtaColorCase::Deck4)};
     bool m_etaShowBeats{true};
     bool m_etaShowTime{true};
     bool m_etaAlignRightEdgeAtPlayhead{false};

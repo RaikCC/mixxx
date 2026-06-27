@@ -9,8 +9,8 @@
 /// variant (the contrast variant is revealed from the right by the live-ETA
 /// proximity indicator, section 7). One such scheme exists for each of five
 /// cases: the deck's own notes, plus the four decks a transition note can refer
-/// to (section 8). Phase 2d makes all five configurable; only the "own" scheme
-/// is applied until the inter-deck display (phase 2e) is built.
+/// to (section 8). All five are configurable (phase 2d); the per-deck schemes
+/// are applied to transition notes by the inter-deck display (phase 2e).
 struct EtaNoteColorScheme {
     QColor bgNormal;
     QColor bgContrast;

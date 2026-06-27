@@ -3,21 +3,25 @@
 #include <QDomNode>
 #include <QFontMetricsF>
 #include <QPainter>
+#include <QVector4D>
 #include <algorithm>
 #include <cmath>
 #include <iterator>
 #include <limits>
+#include <optional>
 
 #include "control/controlproxy.h"
+#include "mixer/playerinfo.h"
+#include "mixer/playermanager.h"
 #include "moc_waveformrendernotes.cpp"
 #include "rendergraph/context.h"
 #include "rendergraph/geometry.h"
 #include "rendergraph/geometrynode.h"
+#include "rendergraph/material/rgbamaterial.h"
 #include "rendergraph/material/texturematerial.h"
-#include "rendergraph/material/unicolormaterial.h"
 #include "rendergraph/texture.h"
+#include "rendergraph/vertexupdaters/rgbavertexupdater.h"
 #include "rendergraph/vertexupdaters/texturedvertexupdater.h"
-#include "rendergraph/vertexupdaters/vertexupdater.h"
 #include "skin/legacy/skincontext.h"
 #include "track/note.h"
 #include "track/track.h"
@@ -156,7 +160,9 @@ allshader::WaveformRenderNotes::WaveformRenderNotes(
     {
         auto pNode = std::make_unique<GeometryNode>();
         m_pLinesNode = pNode.get();
-        m_pLinesNode->initForRectangles<UniColorMaterial>(0);
+        // Per-vertex colors (RGBAMaterial) so each note's marker line can take
+        // its own scheme color (own note vs. another deck's, concept section 8).
+        m_pLinesNode->initForRectangles<RGBAMaterial>(0);
         appendChildNode(std::move(pNode));
     }
     {
@@ -221,10 +227,34 @@ void allshader::WaveformRenderNotes::refreshSettings() {
     m_etaAfterglowOpacity = static_cast<float>(pFactory->getEtaAfterglowOpacity());
     m_etaNoteWidthPx = static_cast<float>(pFactory->getEtaNoteWidthPx());
     m_ownScheme = pFactory->getEtaColorScheme(EtaColorCase::Own);
+    m_deckSchemes[0] = pFactory->getEtaColorScheme(EtaColorCase::Deck1);
+    m_deckSchemes[1] = pFactory->getEtaColorScheme(EtaColorCase::Deck2);
+    m_deckSchemes[2] = pFactory->getEtaColorScheme(EtaColorCase::Deck3);
+    m_deckSchemes[3] = pFactory->getEtaColorScheme(EtaColorCase::Deck4);
 }
 
-QImage allshader::WaveformRenderNotes::bakeLabel(
-        const QString& content, float devicePixelRatio) const {
+std::optional<EtaNoteColorScheme> allshader::WaveformRenderNotes::schemeForNote(
+        const NotePointer& pNote, const std::vector<TrackId>& deckTrackIds) const {
+    const TrackId refTrackId = pNote->getRefTrackId();
+    if (!refTrackId.isValid()) {
+        // A normal note refers to its own track: always drawn in the own scheme.
+        return m_ownScheme;
+    }
+    // A transition note (concept section 8): only shown when the referenced track
+    // is loaded on *another* deck (deckTrackIds already excludes our own deck),
+    // and then in that deck's scheme. The smallest deck index wins; decks beyond
+    // four reuse the deck-4 scheme (only four schemes exist, section 9).
+    for (int deck = 0; deck < static_cast<int>(deckTrackIds.size()); ++deck) {
+        if (deckTrackIds[deck].isValid() && deckTrackIds[deck] == refTrackId) {
+            return m_deckSchemes[std::min(deck, 3)];
+        }
+    }
+    return std::nullopt; // referenced track loaded nowhere else: do not draw
+}
+
+QImage allshader::WaveformRenderNotes::bakeLabel(const QString& content,
+        const EtaNoteColorScheme& scheme,
+        float devicePixelRatio) const {
     QString text = content.simplified(); // single line for now; markdown later
     if (text.isEmpty()) {
         text = QStringLiteral("(empty)"); // placeholder for an empty note
@@ -243,7 +273,7 @@ QImage allshader::WaveformRenderNotes::bakeLabel(
     image.setDevicePixelRatio(devicePixelRatio);
     image.fill(Qt::transparent);
 
-    QColor background = m_ownScheme.bgNormal;
+    QColor background = scheme.bgNormal;
     background.setAlphaF(0.85f);
 
     QPainter painter(&image);
@@ -253,7 +283,7 @@ QImage allshader::WaveformRenderNotes::bakeLabel(
     painter.setBrush(background);
     painter.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 3.0, 3.0);
     painter.setFont(font);
-    painter.setPen(m_ownScheme.fontNormal);
+    painter.setPen(scheme.fontNormal);
     painter.drawText(
             QRectF(kBoxPaddingX, kBoxPaddingY, w - 2.f * kBoxPaddingX, h - 2.f * kBoxPaddingY),
             Qt::AlignLeft | Qt::AlignVCenter,
@@ -321,15 +351,16 @@ allshader::WaveformRenderNotes::ensureEtaBarSlot(
         float fieldWidth,
         float totalWidth,
         float opacity,
+        const EtaNoteColorScheme& scheme,
         float devicePixelRatio) {
     const auto bakeNeutral = [&]() {
         return bakeEtaBar(content, fieldWidth, totalWidth, opacity,
-                m_ownScheme.bgNormal, m_ownScheme.fontNormal,
+                scheme.bgNormal, scheme.fontNormal,
                 m_etaFontPointSize, devicePixelRatio);
     };
     const auto bakeContrast = [&]() {
         return bakeEtaBar(content, fieldWidth, totalWidth, opacity,
-                m_ownScheme.bgContrast, m_ownScheme.fontContrast,
+                scheme.bgContrast, scheme.fontContrast,
                 m_etaFontPointSize, devicePixelRatio);
     };
 
@@ -349,7 +380,7 @@ allshader::WaveformRenderNotes::ensureEtaBarSlot(
         slot.opacity = opacity;
         slot.devicePixelRatio = devicePixelRatio;
         slot.fontPointSize = m_etaFontPointSize;
-        slot.scheme = m_ownScheme;
+        slot.scheme = scheme;
         m_etaBarSlots.push_back(slot);
         m_pEtaBarNodesParent->appendChildNode(std::move(pNode));
         m_pEtaBarNodesParent->appendChildNode(std::move(pContrastNode));
@@ -358,7 +389,7 @@ allshader::WaveformRenderNotes::ensureEtaBarSlot(
     if (slot.content != content || slot.fieldWidth != fieldWidth ||
             slot.totalWidth != totalWidth || slot.opacity != opacity ||
             slot.devicePixelRatio != devicePixelRatio ||
-            slot.fontPointSize != m_etaFontPointSize || slot.scheme != m_ownScheme) {
+            slot.fontPointSize != m_etaFontPointSize || slot.scheme != scheme) {
         slot.pNode->updateTexture(pContext, bakeNeutral());
         slot.pContrastNode->updateTexture(pContext, bakeContrast());
         slot.content = content;
@@ -367,7 +398,7 @@ allshader::WaveformRenderNotes::ensureEtaBarSlot(
         slot.opacity = opacity;
         slot.devicePixelRatio = devicePixelRatio;
         slot.fontPointSize = m_etaFontPointSize;
-        slot.scheme = m_ownScheme;
+        slot.scheme = scheme;
     }
     return slot;
 }
@@ -391,8 +422,9 @@ allshader::DigitsRenderNode* allshader::WaveformRenderNotes::ensureEtaDigitContr
     return m_etaDigitContrastNodes[index];
 }
 
-void allshader::WaveformRenderNotes::rebuildLabels(
-        const QList<NotePointer>& notes, float devicePixelRatio) {
+void allshader::WaveformRenderNotes::rebuildLabels(const QList<NotePointer>& notes,
+        const std::vector<std::optional<EtaNoteColorScheme>>& schemes,
+        float devicePixelRatio) {
     // Detach (and thereby destroy) the existing label nodes. This is safe here
     // because update() runs with a current OpenGL context.
     while (auto* pChild = m_pLabelNodesParent->firstChild()) {
@@ -402,9 +434,14 @@ void allshader::WaveformRenderNotes::rebuildLabels(
     m_labelNodes.reserve(notes.size());
 
     auto* pContext = m_waveformRenderer->getContext();
-    for (const auto& pNote : notes) {
+    // One label node per note (1:1 with notes), even for not-drawn transition
+    // notes: their quad is hidden later. Drawn notes are baked in their resolved
+    // scheme (own or another deck's); a not-drawn note uses the own scheme as a
+    // harmless placeholder for the hidden texture.
+    for (int i = 0; i < static_cast<int>(notes.size()); ++i) {
+        const EtaNoteColorScheme& scheme = schemes[i].value_or(m_ownScheme);
         auto pNode = std::make_unique<NoteLabelNode>(
-                pContext, bakeLabel(pNote->getContent(), devicePixelRatio));
+                pContext, bakeLabel(notes[i]->getContent(), scheme, devicePixelRatio));
         m_labelNodes.push_back(pNode.get());
         m_pLabelNodesParent->appendChildNode(std::move(pNode));
     }
@@ -459,32 +496,61 @@ void allshader::WaveformRenderNotes::update() {
         return;
     }
 
+    // Resolve each note's color scheme (concept sections 8-10). Snapshot the
+    // track loaded on every deck once (skipping our own deck), then map each note
+    // to its scheme: a normal note -> own scheme; a transition note -> the scheme
+    // of the other deck holding its referenced track, or std::nullopt = not drawn.
+    const QString ownGroup = m_waveformRenderer->getGroup();
+    PlayerInfo& playerInfo = PlayerInfo::instance();
+    const int numDecks = playerInfo.numDecks();
+    std::vector<TrackId> deckTrackIds(static_cast<size_t>(std::max(0, numDecks)));
+    for (int deck = 0; deck < numDecks; ++deck) {
+        const QString group = PlayerManager::groupForDeck(deck);
+        if (group == ownGroup) {
+            continue; // leave invalid so our own deck never matches a reference
+        }
+        if (const TrackPointer pTrack = playerInfo.getTrackInfo(group)) {
+            deckTrackIds[deck] = pTrack->getId();
+        }
+    }
+    std::vector<std::optional<EtaNoteColorScheme>> noteSchemes;
+    noteSchemes.reserve(notes.size());
+    for (const auto& pNote : notes) {
+        noteSchemes.push_back(schemeForNote(pNote, deckTrackIds));
+    }
+
     // --- marker lines: one vertical rectangle per note (like WaveformRenderBeat).
     // Drawn after the beat grid (see waveformwidget.cpp), so they cover grid lines
-    // they sit on. While playing they take the indicator's contrast color (so the
-    // fixed timecode markers read together with the live-ETA bars); when stopped
-    // they keep the standard note color.
+    // they sit on. Per-vertex colors: each line takes its note's scheme. While
+    // playing it uses the indicator's contrast color (so the fixed timecode
+    // markers read together with the live-ETA bars); when stopped the normal
+    // color. Not-drawn transition notes get a degenerate (zero-size) rectangle.
     {
         constexpr int numVerticesPerLine = 6; // 2 triangles
         m_pLinesNode->geometry().allocate(
                 static_cast<int>(notes.size()) * numVerticesPerLine);
-        VertexUpdater vertexUpdater{
-                m_pLinesNode->geometry().vertexDataAs<Geometry::Point2D>()};
-        for (const auto& pNote : notes) {
-            const mixxx::audio::FramePos position = pNote->getPosition();
-            if (!position.isValid()) {
-                vertexUpdater.addRectangle({0.f, 0.f}, {0.f, 0.f});
+        RGBAVertexUpdater vertexUpdater{
+                m_pLinesNode->geometry().vertexDataAs<Geometry::RGBAColoredPoint2D>()};
+        for (int i = 0; i < static_cast<int>(notes.size()); ++i) {
+            const mixxx::audio::FramePos position = notes[i]->getPosition();
+            if (!position.isValid() || !noteSchemes[i].has_value()) {
+                vertexUpdater.addRectangle({0.f, 0.f}, {0.f, 0.f}, {0.f, 0.f, 0.f, 0.f});
                 continue;
             }
+            const EtaNoteColorScheme& scheme = *noteSchemes[i];
+            const QColor lineColor = playing ? scheme.bgContrast : scheme.bgNormal;
             const float x = roundToPixel(static_cast<float>(
                     m_waveformRenderer->transformSamplePositionInRendererWorld(
                             position.toEngineSamplePos(),
                             ::WaveformRendererAbstract::Play)));
-            vertexUpdater.addRectangle({x, 0.f}, {x + 1.f, breadth});
+            vertexUpdater.addRectangle({x, 0.f},
+                    {x + 1.f, breadth},
+                    {static_cast<float>(lineColor.redF()),
+                            static_cast<float>(lineColor.greenF()),
+                            static_cast<float>(lineColor.blueF()),
+                            1.f});
         }
         m_pLinesNode->markDirtyGeometry();
-        m_pLinesNode->material().setUniform(
-                1, playing ? m_ownScheme.bgContrast : m_ownScheme.bgNormal);
         m_pLinesNode->markDirtyMaterial();
     }
 
@@ -498,13 +564,13 @@ void allshader::WaveformRenderNotes::update() {
             devicePixelRatio != m_cachedDevicePixelRatio ||
             breadth != m_cachedBreadth ||
             m_etaFontPointSize != m_cachedFontPointSize ||
-            m_ownScheme != m_cachedOwnScheme) {
-        rebuildLabels(notes, devicePixelRatio);
+            noteSchemes != m_cachedSchemes) {
+        rebuildLabels(notes, noteSchemes, devicePixelRatio);
         m_cachedContents = contents;
         m_cachedDevicePixelRatio = devicePixelRatio;
         m_cachedBreadth = breadth;
         m_cachedFontPointSize = m_etaFontPointSize;
-        m_cachedOwnScheme = m_ownScheme;
+        m_cachedSchemes = noteSchemes;
     }
 
     DEBUG_ASSERT(m_labelNodes.size() == static_cast<size_t>(notes.size()));
@@ -538,7 +604,10 @@ void allshader::WaveformRenderNotes::update() {
         labels.reserve(labelCount);
         for (int i = 0; i < labelCount; ++i) {
             const mixxx::audio::FramePos position = notes[i]->getPosition();
-            if (!position.isValid()) {
+            if (!position.isValid() || !noteSchemes[i].has_value()) {
+                // Invalid position, or a transition note whose referenced track
+                // is not on another deck (concept section 8): not drawn, and not
+                // hit-testable for the editor.
                 m_labelNodes[i]->hideQuad();
                 continue;
             }
@@ -606,15 +675,17 @@ void allshader::WaveformRenderNotes::update() {
         double beatsExact;
         double timeSec;
         bool passed;
+        EtaNoteColorScheme scheme;
     };
     std::vector<EtaItem> items;
     int fallbackIndex = -1;
     double fallbackPosition = std::numeric_limits<double>::max();
     for (int i = 0; i < labelCount; ++i) {
         const mixxx::audio::FramePos position = notes[i]->getPosition();
-        if (!position.isValid()) {
-            continue;
+        if (!position.isValid() || !noteSchemes[i].has_value()) {
+            continue; // invalid, or a transition note not on another deck (sec. 8)
         }
+        const EtaNoteColorScheme& scheme = *noteSchemes[i];
         const double samplePosition = position.toEngineSamplePos();
         bool hasBeats = false;
         int beats = 0;
@@ -630,11 +701,12 @@ void allshader::WaveformRenderNotes::update() {
                     fallbackIndex = i;
                 }
             } else if (m_etaWindowBeats <= 0 || beats <= m_etaWindowBeats) {
-                items.push_back({i, samplePosition, beats, beatsExact, timeSec, false});
+                items.push_back({i, samplePosition, beats, beatsExact, timeSec, false, scheme});
             }
         } else if (hasBeats && m_etaAfterglowBeats > 0 && -beats <= m_etaAfterglowBeats) {
             // Passed, still lingering.
-            items.push_back({i, samplePosition, std::max(0, beats), beatsExact, 0.0, true});
+            items.push_back(
+                    {i, samplePosition, std::max(0, beats), beatsExact, 0.0, true, scheme});
         }
     }
     if (items.empty() && fallbackIndex >= 0) {
@@ -644,8 +716,8 @@ void allshader::WaveformRenderNotes::update() {
         double timeSec = 0.0;
         computeBeatsAndTime(
                 playPosition, fallbackPosition, &hasBeats, &beats, &beatsExact, &timeSec);
-        items.push_back(
-                {fallbackIndex, fallbackPosition, std::max(0, beats), beatsExact, timeSec, false});
+        items.push_back({fallbackIndex, fallbackPosition, std::max(0, beats), beatsExact,
+                timeSec, false, *noteSchemes[fallbackIndex]});
     }
 
     if (items.empty()) {
@@ -661,17 +733,18 @@ void allshader::WaveformRenderNotes::update() {
 
     auto* pContext = m_waveformRenderer->getContext();
     const float boxHeight = etaBoxHeight(m_etaFontPointSize);
-    const QColor textColor = m_ownScheme.fontNormal;
 
-    // Shared digit atlas params (font, height, color). ensureEtaDigitNode(0) gives
-    // us a node to measure the countdown-field columns with; updateTexture is a
-    // no-op when the params are unchanged, so building all nodes is cheap.
+    // Shared digit atlas params (font, height). ensureEtaDigitNode(0) gives us a
+    // node to measure the countdown-field columns with; updateTexture is a no-op
+    // when the params are unchanged, so building all nodes is cheap. The color
+    // here is irrelevant (measure() ignores it; the node is re-baked per item
+    // below in its own scheme), so we use the own font color as a placeholder.
     DigitsRenderNode* pAtlas = ensureEtaDigitNode(0);
     pAtlas->updateTexture(pContext,
             static_cast<float>(m_etaFontPointSize),
             boxHeight,
             devicePixelRatio,
-            textColor,
+            m_ownScheme.fontNormal,
             /*withOutline=*/false,
             /*fontFamily=*/QString());
 
@@ -701,7 +774,6 @@ void allshader::WaveformRenderNotes::update() {
     // 9) so it fills equally across notes; with a content-sized bar it is disabled.
     const bool fixedWidth = m_etaNoteWidthPx > 0.f;
     const bool indicatorEnabled = fixedWidth && m_etaWindowBeats > 0;
-    const QColor contrastFontColor = m_ownScheme.fontContrast;
 
     int shown = 0;
     for (int k = 0; k < static_cast<int>(items.size()); ++k) {
@@ -727,8 +799,8 @@ void allshader::WaveformRenderNotes::update() {
                     kBoxPaddingX;
         }
 
-        EtaBarSlot& slot = ensureEtaBarSlot(
-                k, pContext, content, fieldWidth, totalWidth, opacity, devicePixelRatio);
+        EtaBarSlot& slot = ensureEtaBarSlot(k, pContext, content, fieldWidth,
+                totalWidth, opacity, item.scheme, devicePixelRatio);
         const float barWidth = slot.pNode->textureWidth() / devicePixelRatio;
         const float blockLeft = roundToPixel(
                 m_etaAlignRightEdgeAtPlayhead ? playMarkerPos - barWidth : playMarkerPos);
@@ -761,14 +833,14 @@ void allshader::WaveformRenderNotes::update() {
                 static_cast<float>(m_etaFontPointSize),
                 boxHeight,
                 devicePixelRatio,
-                textColor,
+                item.scheme.fontNormal,
                 /*withOutline=*/false,
                 /*fontFamily=*/QString());
         pDigitsContrast->updateTexture(pContext,
                 static_cast<float>(m_etaFontPointSize),
                 boxHeight,
                 devicePixelRatio,
-                contrastFontColor,
+                item.scheme.fontContrast,
                 /*withOutline=*/false,
                 /*fontFamily=*/QString());
         if (item.passed) {
