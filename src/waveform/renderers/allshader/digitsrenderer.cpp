@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QFontMetricsF>
 #include <algorithm>
+#include <limits>
 #include <QGraphicsBlurEffect>
 #include <QGraphicsPixmapItem>
 #include <QGraphicsScene>
@@ -244,6 +245,23 @@ void allshader::DigitsRenderNode::update(
         bool multiLine,
         const QString& s1,
         const QString& s2) {
+    updateClipped(x,
+            y,
+            multiLine,
+            s1,
+            s2,
+            std::numeric_limits<float>::lowest(),
+            std::numeric_limits<float>::max());
+}
+
+void allshader::DigitsRenderNode::updateClipped(
+        float x,
+        float y,
+        bool multiLine,
+        const QString& s1,
+        const QString& s2,
+        float clipLeft,
+        float clipRight) {
     const int numVerticesPerRectangle = 6;
     const int reserved = (s1.length() + s2.length()) * numVerticesPerRectangle;
     geometry().allocate(reserved);
@@ -254,7 +272,9 @@ void allshader::DigitsRenderNode::update(
         const auto w = addVertices(vertexUpdater,
                 x,
                 y,
-                s1);
+                s1,
+                clipLeft,
+                clipRight);
         if (multiLine) {
             y += ch;
         } else {
@@ -265,7 +285,9 @@ void allshader::DigitsRenderNode::update(
         addVertices(vertexUpdater,
                 x,
                 y,
-                s2);
+                s2,
+                clipLeft,
+                clipRight);
     }
 
     DEBUG_ASSERT(reserved == vertexUpdater.index());
@@ -308,7 +330,9 @@ float allshader::DigitsRenderNode::measure(
 float allshader::DigitsRenderNode::addVertices(TexturedVertexUpdater& vertexUpdater,
         float x,
         float y,
-        const QString& s) {
+        const QString& s,
+        float clipLeft,
+        float clipRight) {
     const float x0 = x;
     const float space = static_cast<float>(m_penWidth) / 2;
 
@@ -317,12 +341,25 @@ float allshader::DigitsRenderNode::addVertices(TexturedVertexUpdater& vertexUpda
             x -= space;
         }
         int index = charToIndex(c);
+        const float w = m_width[index];
 
-        vertexUpdater.addRectangle({x, y},
-                {x + m_width[index], y + height()},
-                {m_offset[index], 0.f},
-                {m_offset[index + 1], 1.f});
-        x += m_width[index];
+        // Intersect the glyph [x, x+w] with the clip range; a straddling glyph is
+        // cut exactly at the edge, with the texture u-coordinates moved to match,
+        // so the rendered part lines up to the pixel. Glyphs fully outside emit a
+        // degenerate (invisible) rectangle to keep the reserved vertex count exact.
+        const float left = std::max(x, clipLeft);
+        const float right = std::min(x + w, clipRight);
+        if (w > 0.f && right > left) {
+            const float u0 = m_offset[index];
+            const float u1 = m_offset[index + 1];
+            vertexUpdater.addRectangle({left, y},
+                    {right, y + height()},
+                    {u0 + (u1 - u0) * (left - x) / w, 0.f},
+                    {u0 + (u1 - u0) * (right - x) / w, 1.f});
+        } else {
+            vertexUpdater.addRectangle({0.f, 0.f}, {0.f, 0.f}, {0.f, 0.f}, {0.f, 0.f});
+        }
+        x += w;
     }
 
     return x - x0;

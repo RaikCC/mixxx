@@ -59,6 +59,19 @@ class NoteLabelNode : public rendergraph::GeometryNode {
                 {0.f, 0.f},
                 {1.f, 1.f});
     }
+    // Draws only the rightmost `visibleFraction` (0..1) of the texture, at the
+    // matching sub-range of the quad whose left edge is x. Used by the proximity
+    // indicator to reveal the contrast bar from the right edge leftward.
+    void setQuadClippedLeft(float x, float y, float visibleFraction, float devicePixelRatio) {
+        const float fullWidth = m_textureWidth / devicePixelRatio;
+        const float uMin = 1.f - visibleFraction;
+        TexturedVertexUpdater vertexUpdater{
+                geometry().vertexDataAs<Geometry::TexturedPoint2D>()};
+        vertexUpdater.addRectangle({x + fullWidth * uMin, y},
+                {x + fullWidth, y + m_textureHeight / devicePixelRatio},
+                {uMin, 0.f},
+                {1.f, 1.f});
+    }
     void hideQuad() {
         TexturedVertexUpdater vertexUpdater{
                 geometry().vertexDataAs<Geometry::TexturedPoint2D>()};
@@ -94,6 +107,8 @@ constexpr float kStackGap = 2.f;
 // update() inserts between the beats and the time digits (= digit height * this).
 constexpr float kFieldPadX = 6.f;
 constexpr float kDigitsGapFactor = 0.75f;
+// Gap between the countdown field and the note content inside an ETA bar.
+constexpr float kEtaInnerGap = 6.f;
 
 QFont etaFont() {
     QFont font;
@@ -122,6 +137,22 @@ QColor contrastingTextColor(const QColor& background) {
     const double luma = 0.299 * background.redF() +
             0.587 * background.greenF() + 0.114 * background.blueF();
     return luma > 0.5 ? QColor(Qt::black) : QColor(Qt::white);
+}
+
+// A visibly different color for the proximity indicator: the complementary hue
+// (opposite on the color wheel), kept saturated and bright. Falls back to a fixed
+// accent for achromatic (gray) inputs that have no hue.
+QColor complementaryColor(const QColor& color) {
+    int h = 0;
+    int s = 0;
+    int v = 0;
+    color.getHsv(&h, &s, &v);
+    if (h < 0) { // achromatic: no hue to complement
+        return QColor(0, 153, 255);
+    }
+    QColor out;
+    out.setHsv((h + 180) % 360, std::max(s, 180), std::max(v, 200));
+    return out;
 }
 
 // Format a duration as "m:ss.cc" for the ETA countdown (copied from
@@ -243,8 +274,18 @@ QImage allshader::WaveformRenderNotes::bakeLabel(
     return image;
 }
 
-QImage allshader::WaveformRenderNotes::bakeEtaBar(
-        const QString& content, float fieldWidth, float opacity, float devicePixelRatio) const {
+QColor allshader::WaveformRenderNotes::etaContrastColor() const {
+    return m_etaContrastColor.isValid() ? m_etaContrastColor
+                                        : complementaryColor(m_color);
+}
+
+QImage allshader::WaveformRenderNotes::bakeEtaBar(const QString& content,
+        float fieldWidth,
+        float totalWidth,
+        float opacity,
+        const QColor& bgColor,
+        const QColor& fontColor,
+        float devicePixelRatio) const {
     QString text = content.simplified();
     if (text.isEmpty()) {
         text = QStringLiteral("(empty)");
@@ -253,24 +294,24 @@ QImage allshader::WaveformRenderNotes::bakeEtaBar(
     const QFont font = etaFont();
     const QFontMetricsF metrics{font};
     const float h = etaBoxHeight();
-    const float textWidth =
-            std::ceil(static_cast<float>(metrics.horizontalAdvance(text)));
 
     // One continuous bar: [ countdown field | inner gap | content | padding ].
     // The field region (width fieldWidth, on the left) is left empty here; the
-    // live digits are drawn on top of it each frame.
-    constexpr float kInnerGap = 6.f;
-    const float width = fieldWidth + kInnerGap + textWidth + kBoxPaddingX;
+    // live digits are drawn on top of it each frame. The content is elided to the
+    // remaining width (wrapping is a later step).
+    const float contentX = fieldWidth + kEtaInnerGap;
+    const float contentWidth = std::max(0.f, totalWidth - contentX - kBoxPaddingX);
+    text = metrics.elidedText(text, Qt::ElideRight, contentWidth);
 
-    QImage image(static_cast<int>(std::lround(width * devicePixelRatio)),
+    QImage image(static_cast<int>(std::lround(totalWidth * devicePixelRatio)),
             static_cast<int>(std::lround(h * devicePixelRatio)),
             QImage::Format_ARGB32_Premultiplied);
     image.setDevicePixelRatio(devicePixelRatio);
     image.fill(Qt::transparent);
 
-    QColor background = m_color;
+    QColor background = bgColor;
     background.setAlphaF(0.85f * opacity);
-    QColor textColor = contrastingTextColor(m_color);
+    QColor textColor = fontColor;
     textColor.setAlphaF(opacity);
 
     QPainter painter(&image);
@@ -278,52 +319,71 @@ QImage allshader::WaveformRenderNotes::bakeEtaBar(
     painter.setRenderHint(QPainter::TextAntialiasing);
     painter.setPen(Qt::NoPen);
     painter.setBrush(background);
-    painter.drawRoundedRect(QRectF(0.5, 0.5, width - 1.0, h - 1.0), 3.0, 3.0);
+    painter.drawRoundedRect(QRectF(0.5, 0.5, totalWidth - 1.0, h - 1.0), 3.0, 3.0);
     painter.setFont(font);
     painter.setPen(textColor);
-    painter.drawText(QPointF(fieldWidth + kInnerGap, etaBaselineY()), text);
+    painter.drawText(QPointF(contentX, etaBaselineY()), text);
     painter.end();
 
     return image;
 }
 
-allshader::NoteLabelNode* allshader::WaveformRenderNotes::ensureEtaBarNode(
+allshader::WaveformRenderNotes::EtaBarSlot&
+allshader::WaveformRenderNotes::ensureEtaBarSlot(
         int index,
         rendergraph::Context* pContext,
         const QString& content,
         float fieldWidth,
+        float totalWidth,
         float opacity,
         float devicePixelRatio) {
+    const QColor contrastColor = etaContrastColor();
+    const auto bakeNeutral = [&]() {
+        return bakeEtaBar(content, fieldWidth, totalWidth, opacity, m_color,
+                contrastingTextColor(m_color), devicePixelRatio);
+    };
+    const auto bakeContrast = [&]() {
+        return bakeEtaBar(content, fieldWidth, totalWidth, opacity, contrastColor,
+                contrastingTextColor(contrastColor), devicePixelRatio);
+    };
+
     // Grow the pool up to `index`. Because update() requests the slots in order
-    // (0, 1, 2, ...), the loop only ever appends the single missing node at the
+    // (0, 1, 2, ...), the loop only ever appends the single missing slot at the
     // end; it is baked with this call's inputs, which are exactly the inputs for
     // slot `index`.
     while (static_cast<int>(m_etaBarSlots.size()) <= index) {
-        auto pNode = std::make_unique<NoteLabelNode>(
-                pContext, bakeEtaBar(content, fieldWidth, opacity, devicePixelRatio));
+        auto pNode = std::make_unique<NoteLabelNode>(pContext, bakeNeutral());
+        auto pContrastNode = std::make_unique<NoteLabelNode>(pContext, bakeContrast());
         EtaBarSlot slot;
         slot.pNode = pNode.get();
+        slot.pContrastNode = pContrastNode.get();
         slot.content = content;
         slot.fieldWidth = fieldWidth;
+        slot.totalWidth = totalWidth;
         slot.opacity = opacity;
         slot.devicePixelRatio = devicePixelRatio;
         slot.color = m_color;
+        slot.contrastColor = contrastColor;
         m_etaBarSlots.push_back(slot);
         m_pEtaBarNodesParent->appendChildNode(std::move(pNode));
+        m_pEtaBarNodesParent->appendChildNode(std::move(pContrastNode));
     }
     EtaBarSlot& slot = m_etaBarSlots[index];
     if (slot.content != content || slot.fieldWidth != fieldWidth ||
-            slot.opacity != opacity || slot.devicePixelRatio != devicePixelRatio ||
-            slot.color != m_color) {
-        slot.pNode->updateTexture(
-                pContext, bakeEtaBar(content, fieldWidth, opacity, devicePixelRatio));
+            slot.totalWidth != totalWidth || slot.opacity != opacity ||
+            slot.devicePixelRatio != devicePixelRatio || slot.color != m_color ||
+            slot.contrastColor != contrastColor) {
+        slot.pNode->updateTexture(pContext, bakeNeutral());
+        slot.pContrastNode->updateTexture(pContext, bakeContrast());
         slot.content = content;
         slot.fieldWidth = fieldWidth;
+        slot.totalWidth = totalWidth;
         slot.opacity = opacity;
         slot.devicePixelRatio = devicePixelRatio;
         slot.color = m_color;
+        slot.contrastColor = contrastColor;
     }
-    return slot.pNode;
+    return slot;
 }
 
 allshader::DigitsRenderNode* allshader::WaveformRenderNotes::ensureEtaDigitNode(int index) {
@@ -333,6 +393,16 @@ allshader::DigitsRenderNode* allshader::WaveformRenderNotes::ensureEtaDigitNode(
         m_pEtaDigitsParent->appendChildNode(std::move(pNode));
     }
     return m_etaDigitNodes[index];
+}
+
+allshader::DigitsRenderNode* allshader::WaveformRenderNotes::ensureEtaDigitContrastNode(
+        int index) {
+    while (static_cast<int>(m_etaDigitContrastNodes.size()) <= index) {
+        auto pNode = std::make_unique<DigitsRenderNode>();
+        m_etaDigitContrastNodes.push_back(pNode.get());
+        m_pEtaDigitsParent->appendChildNode(std::move(pNode));
+    }
+    return m_etaDigitContrastNodes[index];
 }
 
 void allshader::WaveformRenderNotes::rebuildLabels(
@@ -365,8 +435,13 @@ void allshader::WaveformRenderNotes::update() {
             : QList<NotePointer>{};
 
     const auto roundToPixel = createFunctionRoundToPixel(devicePixelRatio);
+    const bool playing = m_pPlayControl && m_pPlayControl->get() != 0.0;
 
-    // --- marker lines: one vertical rectangle per note (like WaveformRenderBeat)
+    // --- marker lines: one vertical rectangle per note (like WaveformRenderBeat).
+    // Drawn after the beat grid (see waveformwidget.cpp), so they cover grid lines
+    // they sit on. While playing they take the indicator's contrast color (so the
+    // fixed timecode markers read together with the live-ETA bars); when stopped
+    // they keep the standard note color.
     {
         constexpr int numVerticesPerLine = 6; // 2 triangles
         m_pLinesNode->geometry().allocate(
@@ -386,7 +461,7 @@ void allshader::WaveformRenderNotes::update() {
             vertexUpdater.addRectangle({x, 0.f}, {x + 1.f, breadth});
         }
         m_pLinesNode->markDirtyGeometry();
-        m_pLinesNode->material().setUniform(1, m_color);
+        m_pLinesNode->material().setUniform(1, playing ? etaContrastColor() : m_color);
         m_pLinesNode->markDirtyMaterial();
     }
 
@@ -411,15 +486,20 @@ void allshader::WaveformRenderNotes::update() {
 
     const double playPosition =
             m_waveformRenderer->getTruePosSample(::WaveformRendererAbstract::Play);
-    const bool playing = m_pPlayControl && m_pPlayControl->get() != 0.0;
 
     const auto hideAllEtaNodes = [this]() {
         for (auto& slot : m_etaBarSlots) {
             if (slot.pNode) {
                 slot.pNode->hideQuad();
             }
+            if (slot.pContrastNode) {
+                slot.pContrastNode->hideQuad();
+            }
         }
         for (auto* pDigits : m_etaDigitNodes) {
+            pDigits->clear();
+        }
+        for (auto* pDigits : m_etaDigitContrastNodes) {
             pDigits->clear();
         }
     };
@@ -458,6 +538,7 @@ void allshader::WaveformRenderNotes::update() {
         int noteIndex;
         double position;
         int beats;
+        double beatsExact;
         double timeSec;
         bool passed;
     };
@@ -472,8 +553,10 @@ void allshader::WaveformRenderNotes::update() {
         const double samplePosition = position.toEngineSamplePos();
         bool hasBeats = false;
         int beats = 0;
+        double beatsExact = 0.0;
         double timeSec = 0.0;
-        computeBeatsAndTime(playPosition, samplePosition, &hasBeats, &beats, &timeSec);
+        computeBeatsAndTime(
+                playPosition, samplePosition, &hasBeats, &beats, &beatsExact, &timeSec);
         if (samplePosition >= playPosition + 1.0) {
             // Upcoming.
             if (!hasBeats) {
@@ -482,19 +565,22 @@ void allshader::WaveformRenderNotes::update() {
                     fallbackIndex = i;
                 }
             } else if (m_etaWindowBeats <= 0 || beats <= m_etaWindowBeats) {
-                items.push_back({i, samplePosition, beats, timeSec, false});
+                items.push_back({i, samplePosition, beats, beatsExact, timeSec, false});
             }
         } else if (hasBeats && m_etaAfterglowBeats > 0 && -beats <= m_etaAfterglowBeats) {
             // Passed, still lingering.
-            items.push_back({i, samplePosition, std::max(0, beats), 0.0, true});
+            items.push_back({i, samplePosition, std::max(0, beats), beatsExact, 0.0, true});
         }
     }
     if (items.empty() && fallbackIndex >= 0) {
         bool hasBeats = false;
         int beats = 0;
+        double beatsExact = 0.0;
         double timeSec = 0.0;
-        computeBeatsAndTime(playPosition, fallbackPosition, &hasBeats, &beats, &timeSec);
-        items.push_back({fallbackIndex, fallbackPosition, std::max(0, beats), timeSec, false});
+        computeBeatsAndTime(
+                playPosition, fallbackPosition, &hasBeats, &beats, &beatsExact, &timeSec);
+        items.push_back(
+                {fallbackIndex, fallbackPosition, std::max(0, beats), beatsExact, timeSec, false});
     }
 
     if (items.empty()) {
@@ -546,6 +632,12 @@ void allshader::WaveformRenderNotes::update() {
             m_waveformRenderer->getPlayMarkerPosition() *
             m_waveformRenderer->getLength());
 
+    // The proximity indicator (concept section 7) needs a fixed bar width (section
+    // 9) so it fills equally across notes; with a content-sized bar it is disabled.
+    const bool fixedWidth = m_etaNoteWidthPx > 0.f;
+    const bool indicatorEnabled = fixedWidth && m_etaWindowBeats > 0;
+    const QColor contrastFontColor = contrastingTextColor(etaContrastColor());
+
     int shown = 0;
     for (int k = 0; k < static_cast<int>(items.size()); ++k) {
         const float boxTop = roundToPixel(kStackTopMargin + k * (boxHeight + kStackGap));
@@ -558,14 +650,48 @@ void allshader::WaveformRenderNotes::update() {
         const float opacity = item.passed ? m_etaAfterglowOpacity : 1.f;
         const QString content = notes[item.noteIndex]->getContent();
 
-        NoteLabelNode* pBar = ensureEtaBarNode(
-                k, pContext, content, fieldWidth, opacity, devicePixelRatio);
-        const float barWidth = pBar->textureWidth() / devicePixelRatio;
+        float totalWidth = m_etaNoteWidthPx;
+        if (!fixedWidth) {
+            QString t = content.simplified();
+            if (t.isEmpty()) {
+                t = QStringLiteral("(empty)");
+            }
+            const QFontMetricsF metrics{etaFont()};
+            totalWidth = fieldWidth + kEtaInnerGap +
+                    std::ceil(static_cast<float>(metrics.horizontalAdvance(t))) +
+                    kBoxPaddingX;
+        }
+
+        EtaBarSlot& slot = ensureEtaBarSlot(
+                k, pContext, content, fieldWidth, totalWidth, opacity, devicePixelRatio);
+        const float barWidth = slot.pNode->textureWidth() / devicePixelRatio;
         const float blockLeft = roundToPixel(
                 m_etaAlignRightEdgeAtPlayhead ? playMarkerPos - barWidth : playMarkerPos);
-        pBar->setQuad(blockLeft, boxTop, devicePixelRatio);
+        slot.pNode->setQuad(blockLeft, boxTop, devicePixelRatio);
+
+        // Reveal the contrast bar from the right, proportional to how far the note
+        // has travelled through the preview window: empty at the window edge, full
+        // when it reaches the play marker, and held full while it lingers.
+        float fill = 0.f;
+        if (indicatorEnabled) {
+            fill = item.passed
+                    ? 1.f
+                    : std::clamp(static_cast<float>((m_etaWindowBeats - item.beatsExact) /
+                                         m_etaWindowBeats),
+                              0.f,
+                              1.f);
+        }
+        // Boundary x where the contrast fill begins (same as the bar's contrast
+        // quad left edge), so the digits change color exactly there.
+        const float fillBoundaryX = blockLeft + barWidth * (1.f - fill);
+        if (fill > 0.f) {
+            slot.pContrastNode->setQuadClippedLeft(blockLeft, boxTop, fill, devicePixelRatio);
+        } else {
+            slot.pContrastNode->hideQuad();
+        }
 
         DigitsRenderNode* pDigits = ensureEtaDigitNode(k);
+        DigitsRenderNode* pDigitsContrast = ensureEtaDigitContrastNode(k);
         pDigits->updateTexture(pContext,
                 static_cast<float>(kEtaFontPointSize),
                 boxHeight,
@@ -573,9 +699,17 @@ void allshader::WaveformRenderNotes::update() {
                 textColor,
                 /*withOutline=*/false,
                 /*fontFamily=*/QString());
+        pDigitsContrast->updateTexture(pContext,
+                static_cast<float>(kEtaFontPointSize),
+                boxHeight,
+                devicePixelRatio,
+                contrastFontColor,
+                /*withOutline=*/false,
+                /*fontFamily=*/QString());
         if (item.passed) {
             // The countdown is over; the dimmed bar lingers without a number.
             pDigits->clear();
+            pDigitsContrast->clear();
         } else {
             const QString beatsStr =
                     m_etaShowBeats ? QString::number(item.beats) : QString{};
@@ -589,7 +723,12 @@ void allshader::WaveformRenderNotes::update() {
                     roundToPixel(blockLeft + kFieldPadX + (beatsColWidth - beatsWidth));
             const float digitsY =
                     roundToPixel(boxTop + etaBaselineY() - pDigits->baseline());
-            pDigits->update(digitsX, digitsY, false, beatsStr, timeStr);
+            // Draw the same digits twice, clipped at the fill boundary: neutral on
+            // the not-yet-reached (left) part, contrast on the filled (right) part.
+            pDigits->updateClipped(digitsX, digitsY, false, beatsStr, timeStr,
+                    std::numeric_limits<float>::lowest(), fillBoundaryX);
+            pDigitsContrast->updateClipped(digitsX, digitsY, false, beatsStr, timeStr,
+                    fillBoundaryX, std::numeric_limits<float>::max());
         }
         ++shown;
     }
@@ -599,9 +738,15 @@ void allshader::WaveformRenderNotes::update() {
         if (m_etaBarSlots[k].pNode) {
             m_etaBarSlots[k].pNode->hideQuad();
         }
+        if (m_etaBarSlots[k].pContrastNode) {
+            m_etaBarSlots[k].pContrastNode->hideQuad();
+        }
     }
     for (int k = shown; k < static_cast<int>(m_etaDigitNodes.size()); ++k) {
         m_etaDigitNodes[k]->clear();
+    }
+    for (int k = shown; k < static_cast<int>(m_etaDigitContrastNodes.size()); ++k) {
+        m_etaDigitContrastNodes[k]->clear();
     }
 }
 
@@ -609,9 +754,11 @@ void allshader::WaveformRenderNotes::computeBeatsAndTime(double playPosition,
         double notePosition,
         bool* hasBeats,
         int* beats,
+        double* beatsExact,
         double* timeSec) const {
     *hasBeats = false;
     *beats = 0;
+    *beatsExact = 0.0;
     *timeSec = 0.0;
 
     const TrackPointer trackInfo = m_waveformRenderer->getTrackInfo();
@@ -655,7 +802,8 @@ void allshader::WaveformRenderNotes::computeBeatsAndTime(double playPosition,
         const auto itPlay = beatBeforeWithFraction(playPosition, &fracPlay);
         const auto itNote = beatBeforeWithFraction(notePosition, &fracNote);
         const double wholeBeats = static_cast<double>(itNote - itPlay);
-        *beats = static_cast<int>(std::floor(wholeBeats - fracPlay + fracNote));
+        *beatsExact = wholeBeats - fracPlay + fracNote;
+        *beats = static_cast<int>(std::floor(*beatsExact));
         *hasBeats = true;
     }
 

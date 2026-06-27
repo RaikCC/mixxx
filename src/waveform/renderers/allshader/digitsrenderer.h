@@ -39,6 +39,19 @@ class allshader::DigitsRenderNode : public rendergraph::GeometryNode {
             const QString& s1,
             const QString& s2);
 
+    // Like update(), but only the parts of the glyphs within the horizontal range
+    // [clipLeft, clipRight) are drawn; a glyph straddling an edge is split exactly
+    // there (texture coordinates adjusted). Two clipped passes in different colors
+    // give a pixel-perfect color change at an arbitrary x (the ETA proximity fill).
+    void updateClipped(
+            float x,
+            float y,
+            bool multiLine,
+            const QString& s1,
+            const QString& s2,
+            float clipLeft,
+            float clipRight);
+
     void clear();
 
     float height() const;
@@ -56,7 +69,9 @@ class allshader::DigitsRenderNode : public rendergraph::GeometryNode {
     float addVertices(rendergraph::TexturedVertexUpdater& vertexUpdater,
             float x,
             float y,
-            const QString& s);
+            const QString& s,
+            float clipLeft,
+            float clipRight);
 
     int m_penWidth;
     float m_offset[13];
