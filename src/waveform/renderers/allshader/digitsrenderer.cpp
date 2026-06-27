@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <QFontMetricsF>
+#include <algorithm>
 #include <QGraphicsBlurEffect>
 #include <QGraphicsPixmapItem>
 #include <QGraphicsScene>
@@ -251,6 +252,36 @@ void allshader::DigitsRenderNode::update(
 
 void allshader::DigitsRenderNode::clear() {
     geometry().allocate(0);
+}
+
+float allshader::DigitsRenderNode::measure(
+        const QString& s1, const QString& s2, bool multiLine) const {
+    const float space = static_cast<float>(m_penWidth) / 2;
+    // Mirrors addVertices: characters are packed with a small overlap of `space`
+    // between adjacent glyphs.
+    const auto widthOf = [this, space](const QString& s) {
+        float x = 0.f;
+        bool first = true;
+        for (QChar c : s) {
+            if (!first) {
+                x -= space;
+            }
+            first = false;
+            x += m_width[charToIndex(c)];
+        }
+        return x;
+    };
+    const float w1 = s1.isEmpty() ? 0.f : widthOf(s1);
+    const float w2 = s2.isEmpty() ? 0.f : widthOf(s2);
+    if (multiLine) {
+        return std::max(w1, w2);
+    }
+    // Single line: the two strings are laid out side by side with a gap of
+    // height() * 0.75 between them (see update()).
+    if (w1 > 0.f && w2 > 0.f) {
+        return w1 + height() * 0.75f + w2;
+    }
+    return w1 + w2;
 }
 
 float allshader::DigitsRenderNode::addVertices(TexturedVertexUpdater& vertexUpdater,

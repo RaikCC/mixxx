@@ -33,6 +33,11 @@ class allshader::DigitsRenderNode : public rendergraph::GeometryNode {
 
     float height() const;
 
+    // Width in logical pixels that update() would occupy for the given strings,
+    // using the same layout. Valid after updateTexture has been called at least
+    // once. Used by callers that need to right-align the rendered block.
+    float measure(const QString& s1, const QString& s2, bool multiLine) const;
+
   private:
     float addVertices(rendergraph::TexturedVertexUpdater& vertexUpdater,
             float x,
