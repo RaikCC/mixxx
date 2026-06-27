@@ -31,6 +31,7 @@ WaveformWidget::WaveformWidget(QWidget* parent,
           WaveformWidgetAbstract(group),
           m_type(type),
           m_pWaveformRenderMarkSlip(nullptr),
+          m_pWaveformRenderNotes(nullptr),
           m_pWaveformRendererSignal(nullptr) {
     auto pTopNode = std::make_unique<rendergraph::Node>();
     auto pOpacityNode = std::make_unique<rendergraph::OpacityNode>();
@@ -59,7 +60,7 @@ WaveformWidget::WaveformWidget(QWidget* parent,
         pOpacityNode->appendChildNode(std::unique_ptr<rendergraph::BaseNode>(pNode));
     }
     pOpacityNode->appendChildNode(addRendererNode<WaveformRenderBeat>());
-    pOpacityNode->appendChildNode(addRendererNode<WaveformRenderNotes>());
+    m_pWaveformRenderNotes = pOpacityNode->appendChildNode(addRendererNode<WaveformRenderNotes>());
     m_pWaveformRenderMark = pOpacityNode->appendChildNode(addRendererNode<WaveformRenderMark>());
 
     // if the added signal renderer supports slip, we add it again, now for
@@ -159,6 +160,7 @@ void WaveformWidget::paintGL() {
     if (m_pWaveformRenderMarkSlip) {
         m_pWaveformRenderMarkSlip->update();
     }
+    m_pWaveformRenderNotes->update();
 
     m_pEngine->preprocess();
     m_pEngine->render();

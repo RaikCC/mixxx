@@ -11,6 +11,7 @@ namespace allshader {
 class WaveformWidget;
 class WaveformRenderMark;
 class WaveformRenderMarkRange;
+class WaveformRenderNotes;
 }
 
 class allshader::WaveformWidget final : public ::WGLWidget,
@@ -71,6 +72,7 @@ class allshader::WaveformWidget final : public ::WGLWidget,
     WaveformRenderMark* m_pWaveformRenderMark;
     WaveformRenderMarkRange* m_pWaveformRenderMarkRange;
     WaveformRenderMark* m_pWaveformRenderMarkSlip;
+    WaveformRenderNotes* m_pWaveformRenderNotes;
 
     WaveformRendererSignalBase* m_pWaveformRendererSignal;
 
