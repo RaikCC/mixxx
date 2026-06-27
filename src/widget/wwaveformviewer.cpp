@@ -1,5 +1,6 @@
 #include "widget/wwaveformviewer.h"
 
+#include <QApplication>
 #include <QDragEnterEvent>
 #include <QEvent>
 #include <QMenu>
@@ -102,17 +103,16 @@ void WWaveformViewer::mousePressEvent(QMouseEvent* event) {
     m_mouseAnchor = event->pos();
 
     if (event->button() == Qt::LeftButton) {
-        // Clicking the content of a standing note opens its editor instead of
-        // scratching (concept section 6: "in den Content klicken öffnet die
-        // Bearbeitung"). Only in the standing view, where the labels are shown.
+        // Pressing a standing note arms a move/edit gesture instead of scratching
+        // (concept section 6): dragging past a threshold moves the note, a click
+        // without dragging opens its editor (decided on release). Only in the
+        // standing view, where the labels are shown.
         if (!isPlaying()) {
             NotePointer pNote = m_waveformWidget->getNoteLabelAtPoint(event->pos());
             if (pNote) {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-                openNoteEditor(pNote, false, event->globalPosition().toPoint());
-#else
-                openNoteEditor(pNote, false, event->globalPos());
-#endif
+                m_pPressedNote = pNote;
+                m_bDraggingNote = false;
+                setCursor(Qt::ClosedHandCursor);
                 return;
             }
         }
@@ -166,6 +166,12 @@ void WWaveformViewer::mouseDoubleClickEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton) {
         return;
     }
+    // The single click preceding this double-click already opened the editor for
+    // a note under the cursor (a click on a note edits it). Don't act again on
+    // top of the open popup.
+    if (m_pNoteMenuPopup->isVisible()) {
+        return;
+    }
     // A double-click is meant for authoring a note, not scratching: undo the
     // scratch the preceding single press started.
     if (m_bScratching) {
@@ -198,6 +204,27 @@ void WWaveformViewer::mouseDoubleClickEvent(QMouseEvent* event) {
 
 void WWaveformViewer::mouseMoveEvent(QMouseEvent* event) {
     if (!m_waveformWidget || m_waveformWidget->getType() == WaveformWidgetType::Empty) {
+        return;
+    }
+
+    // Dragging an armed standing note moves it (concept section 6). A small
+    // movement is still treated as a click (handled on release); past the
+    // threshold the note follows the cursor live.
+    if (m_pPressedNote) {
+        if (!m_bDraggingNote &&
+                (event->pos() - m_mouseAnchor).manhattanLength() >=
+                        QApplication::startDragDistance()) {
+            m_bDraggingNote = true;
+        }
+        if (m_bDraggingNote) {
+            const mixxx::audio::FramePos position = framePosFromMouse(event->pos());
+            if (position.isValid()) {
+                // The note is connected to the track, so this marks it dirty and
+                // re-renders immediately. framePosFromMouse snaps to the nearest
+                // beat when the deck's quantize is on, exactly like authoring.
+                m_pPressedNote->setPosition(position);
+            }
+        }
         return;
     }
 
@@ -254,6 +281,27 @@ void WWaveformViewer::mouseMoveEvent(QMouseEvent* event) {
 
 void WWaveformViewer::mouseReleaseEvent(QMouseEvent* event) {
     const QPoint pressPos = m_mouseAnchor;
+
+    // Finish an armed ETA-note gesture (concept section 6). If the press never
+    // became a drag it was a click: open the editor. Otherwise the note was
+    // already moved live, so just clean up.
+    if (m_pPressedNote) {
+        const NotePointer pNote = m_pPressedNote;
+        const bool wasDragging = m_bDraggingNote;
+        m_pPressedNote.reset();
+        m_bDraggingNote = false;
+        m_mouseAnchor = QPoint();
+        setCursor(Qt::ArrowCursor);
+        if (!wasDragging && event && event->button() == Qt::LeftButton) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+            openNoteEditor(pNote, false, event->globalPosition().toPoint());
+#else
+            openNoteEditor(pNote, false, event->globalPos());
+#endif
+        }
+        return;
+    }
+
     if (m_bScratching) {
         m_pScratchPositionEnable->set(0.0);
         m_bScratching = false;

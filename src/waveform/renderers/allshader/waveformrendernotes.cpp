@@ -508,8 +508,28 @@ void allshader::WaveformRenderNotes::update() {
         }
     };
 
-    // --- standing view (concept section 6): labels anchored at their timecode
+    // --- standing view (concept section 6): labels anchored at their timecode.
+    // Overlapping labels are stacked downward so they don't cover each other:
+    // earliest-arriving on top, later ones slid underneath, but never past the
+    // waveform bottom (section 10), matching the live-ETA view. Labels whose
+    // x-ranges don't overlap all stay on the top row, so the common (sparse)
+    // case looks unchanged.
     if (!playing) {
+        const float boxHeight = etaBoxHeight();
+        const int maxRows = std::max(1,
+                static_cast<int>(std::floor(
+                        (breadth - kStackTopMargin + kStackGap) /
+                        (boxHeight + kStackGap))));
+
+        // Drawable labels (valid position) with their geometry, processed in
+        // left-to-right (= chronological) order so the earliest lands on top.
+        struct StandingLabel {
+            int index; // into notes / m_labelNodes
+            float x;   // label box left edge (logical px)
+            float width;
+        };
+        std::vector<StandingLabel> labels;
+        labels.reserve(labelCount);
         for (int i = 0; i < labelCount; ++i) {
             const mixxx::audio::FramePos position = notes[i]->getPosition();
             if (!position.isValid()) {
@@ -521,10 +541,42 @@ void allshader::WaveformRenderNotes::update() {
                             position.toEngineSamplePos(),
                             ::WaveformRendererAbstract::Play)) +
                     2.f);
-            m_labelNodes[i]->setQuad(x, 0.f, devicePixelRatio);
             const float w = m_labelNodes[i]->textureWidth() / devicePixelRatio;
-            const float h = m_labelNodes[i]->textureHeight() / devicePixelRatio;
-            m_noteHitBoxes.push_back({notes[i], QRectF(x, 0.f, w, h), x - 2.f});
+            labels.push_back({i, x, w});
+        }
+        std::sort(labels.begin(), labels.end(),
+                [](const StandingLabel& a, const StandingLabel& b) {
+                    return a.x < b.x;
+                });
+
+        // Right edge (logical px) of the last label placed in each row; a label
+        // may join a row only to the right of it (plus a small gap).
+        std::vector<float> rowRightEdge(
+                maxRows, std::numeric_limits<float>::lowest());
+        for (const StandingLabel& label : labels) {
+            int row = -1;
+            for (int r = 0; r < maxRows; ++r) {
+                if (label.x >= rowRightEdge[r] + kStackGap) {
+                    row = r;
+                    break;
+                }
+            }
+            if (row < 0) {
+                // Every row is still occupied at this x: drop into the one that
+                // frees up soonest (least overlap), keeping the stack in bounds.
+                row = static_cast<int>(
+                        std::min_element(rowRightEdge.begin(), rowRightEdge.end()) -
+                        rowRightEdge.begin());
+            }
+            rowRightEdge[row] = label.x + label.width;
+            const float y = roundToPixel(
+                    kStackTopMargin + row * (boxHeight + kStackGap));
+            m_labelNodes[label.index]->setQuad(label.x, y, devicePixelRatio);
+            const float h =
+                    m_labelNodes[label.index]->textureHeight() / devicePixelRatio;
+            m_noteHitBoxes.push_back({notes[label.index],
+                    QRectF(label.x, y, label.width, h),
+                    label.x - 2.f});
         }
         hideAllEtaNodes();
         return;

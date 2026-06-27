@@ -95,6 +95,13 @@ class WWaveformViewer : public WWidget, public TrackDropTarget {
     ControlProxy* m_pQuantizeEnabled;
     WaveformMarkPointer m_pHoveredMark;
 
+    // ETA Notes drag-to-move (phase 2c-v2). A left press on a standing note's
+    // label arms this gesture: dragging past a threshold moves the note (live,
+    // quantized like authoring); a click without dragging opens the editor on
+    // release. Null while no note interaction is in progress.
+    NotePointer m_pPressedNote;
+    bool m_bDraggingNote{false};
+
     WaveformWidgetAbstract* m_waveformWidget;
 
     int m_dimBrightThreshold;
