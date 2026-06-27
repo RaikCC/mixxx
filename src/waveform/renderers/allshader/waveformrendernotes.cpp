@@ -86,6 +86,15 @@ constexpr double kEtaFontPointSize = 10.0;
 constexpr float kBoxPaddingX = 4.f;
 constexpr float kBoxPaddingY = 2.f;
 
+// Vertical layout of the stacked live-ETA bars: a small top margin, then a gap
+// between bars. They stack downward and never run past the waveform bottom.
+constexpr float kStackTopMargin = 2.f;
+constexpr float kStackGap = 2.f;
+// Horizontal padding inside the countdown field, and the side-by-side gap factor
+// update() inserts between the beats and the time digits (= digit height * this).
+constexpr float kFieldPadX = 6.f;
+constexpr float kDigitsGapFactor = 0.75f;
+
 QFont etaFont() {
     QFont font;
     font.setPointSizeF(kEtaFontPointSize);
@@ -160,9 +169,11 @@ allshader::WaveformRenderNotes::WaveformRenderNotes(
         appendChildNode(std::move(pNode));
     }
     {
-        // Drawn last (on top) -- the live-ETA countdown digits at the play marker.
-        auto pNode = std::make_unique<DigitsRenderNode>();
-        m_pDigitsNode = pNode.get();
+        // Drawn last (on top) -- parent of the per-note live-ETA countdown digit
+        // nodes at the play marker. The digit nodes are created lazily in update()
+        // (they need a GL context to upload their atlas texture).
+        auto pNode = std::make_unique<Node>();
+        m_pEtaDigitsParent = pNode.get();
         appendChildNode(std::move(pNode));
     }
 }
@@ -233,7 +244,7 @@ QImage allshader::WaveformRenderNotes::bakeLabel(
 }
 
 QImage allshader::WaveformRenderNotes::bakeEtaBar(
-        const QString& content, float fieldWidth, float devicePixelRatio) const {
+        const QString& content, float fieldWidth, float opacity, float devicePixelRatio) const {
     QString text = content.simplified();
     if (text.isEmpty()) {
         text = QStringLiteral("(empty)");
@@ -258,7 +269,9 @@ QImage allshader::WaveformRenderNotes::bakeEtaBar(
     image.fill(Qt::transparent);
 
     QColor background = m_color;
-    background.setAlphaF(0.85f);
+    background.setAlphaF(0.85f * opacity);
+    QColor textColor = contrastingTextColor(m_color);
+    textColor.setAlphaF(opacity);
 
     QPainter painter(&image);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -267,11 +280,59 @@ QImage allshader::WaveformRenderNotes::bakeEtaBar(
     painter.setBrush(background);
     painter.drawRoundedRect(QRectF(0.5, 0.5, width - 1.0, h - 1.0), 3.0, 3.0);
     painter.setFont(font);
-    painter.setPen(contrastingTextColor(background));
+    painter.setPen(textColor);
     painter.drawText(QPointF(fieldWidth + kInnerGap, etaBaselineY()), text);
     painter.end();
 
     return image;
+}
+
+allshader::NoteLabelNode* allshader::WaveformRenderNotes::ensureEtaBarNode(
+        int index,
+        rendergraph::Context* pContext,
+        const QString& content,
+        float fieldWidth,
+        float opacity,
+        float devicePixelRatio) {
+    // Grow the pool up to `index`. Because update() requests the slots in order
+    // (0, 1, 2, ...), the loop only ever appends the single missing node at the
+    // end; it is baked with this call's inputs, which are exactly the inputs for
+    // slot `index`.
+    while (static_cast<int>(m_etaBarSlots.size()) <= index) {
+        auto pNode = std::make_unique<NoteLabelNode>(
+                pContext, bakeEtaBar(content, fieldWidth, opacity, devicePixelRatio));
+        EtaBarSlot slot;
+        slot.pNode = pNode.get();
+        slot.content = content;
+        slot.fieldWidth = fieldWidth;
+        slot.opacity = opacity;
+        slot.devicePixelRatio = devicePixelRatio;
+        slot.color = m_color;
+        m_etaBarSlots.push_back(slot);
+        m_pEtaBarNodesParent->appendChildNode(std::move(pNode));
+    }
+    EtaBarSlot& slot = m_etaBarSlots[index];
+    if (slot.content != content || slot.fieldWidth != fieldWidth ||
+            slot.opacity != opacity || slot.devicePixelRatio != devicePixelRatio ||
+            slot.color != m_color) {
+        slot.pNode->updateTexture(
+                pContext, bakeEtaBar(content, fieldWidth, opacity, devicePixelRatio));
+        slot.content = content;
+        slot.fieldWidth = fieldWidth;
+        slot.opacity = opacity;
+        slot.devicePixelRatio = devicePixelRatio;
+        slot.color = m_color;
+    }
+    return slot.pNode;
+}
+
+allshader::DigitsRenderNode* allshader::WaveformRenderNotes::ensureEtaDigitNode(int index) {
+    while (static_cast<int>(m_etaDigitNodes.size()) <= index) {
+        auto pNode = std::make_unique<DigitsRenderNode>();
+        m_etaDigitNodes.push_back(pNode.get());
+        m_pEtaDigitsParent->appendChildNode(std::move(pNode));
+    }
+    return m_etaDigitNodes[index];
 }
 
 void allshader::WaveformRenderNotes::rebuildLabels(
@@ -348,24 +409,20 @@ void allshader::WaveformRenderNotes::update() {
     const int labelCount =
             std::min(static_cast<int>(notes.size()), static_cast<int>(m_labelNodes.size()));
 
-    // --- find the next upcoming note (smallest position past the play marker)
     const double playPosition =
             m_waveformRenderer->getTruePosSample(::WaveformRendererAbstract::Play);
-    int nextNoteIndex = -1;
-    double nextNotePosition = std::numeric_limits<double>::max();
-    for (int i = 0; i < labelCount; ++i) {
-        const mixxx::audio::FramePos position = notes[i]->getPosition();
-        if (!position.isValid()) {
-            continue;
-        }
-        const double samplePosition = position.toEngineSamplePos();
-        if (samplePosition >= playPosition + 1.0 && samplePosition < nextNotePosition) {
-            nextNotePosition = samplePosition;
-            nextNoteIndex = i;
-        }
-    }
-
     const bool playing = m_pPlayControl && m_pPlayControl->get() != 0.0;
+
+    const auto hideAllEtaNodes = [this]() {
+        for (auto& slot : m_etaBarSlots) {
+            if (slot.pNode) {
+                slot.pNode->hideQuad();
+            }
+        }
+        for (auto* pDigits : m_etaDigitNodes) {
+            pDigits->clear();
+        }
+    };
 
     // --- standing view (concept section 6): labels anchored at their timecode
     if (!playing) {
@@ -382,36 +439,84 @@ void allshader::WaveformRenderNotes::update() {
                     2.f);
             m_labelNodes[i]->setQuad(x, 0.f, devicePixelRatio);
         }
-        m_pDigitsNode->clear();
-        if (m_pEtaBarNode) {
-            m_pEtaBarNode->hideQuad();
-        }
+        hideAllEtaNodes();
         return;
     }
 
-    // --- live-ETA view (concept section 7): one continuous bar -- a fixed
-    // countdown field plus the next note's content -- anchored at the play
-    // marker. All the timecode-anchored labels are hidden.
+    // --- live-ETA view (concept section 7): the timecode-anchored labels are
+    // hidden; instead a stack of bars is anchored at the play marker, one per note
+    // inside the preview window (plus recently passed notes still in afterglow).
     for (int i = 0; i < labelCount; ++i) {
         m_labelNodes[i]->hideQuad();
     }
-    if (nextNoteIndex < 0) {
-        m_pDigitsNode->clear();
-        if (m_pEtaBarNode) {
-            m_pEtaBarNode->hideQuad();
+
+    // Gather the notes to display, each with its countdown state. Upcoming notes
+    // are kept while within m_etaWindowBeats; passed notes while within
+    // m_etaAfterglowBeats ("Nachleuchten"). Without a beat grid we fall back to
+    // just the single nearest upcoming note (the pre-window behaviour).
+    struct EtaItem {
+        int noteIndex;
+        double position;
+        int beats;
+        double timeSec;
+        bool passed;
+    };
+    std::vector<EtaItem> items;
+    int fallbackIndex = -1;
+    double fallbackPosition = std::numeric_limits<double>::max();
+    for (int i = 0; i < labelCount; ++i) {
+        const mixxx::audio::FramePos position = notes[i]->getPosition();
+        if (!position.isValid()) {
+            continue;
         }
+        const double samplePosition = position.toEngineSamplePos();
+        bool hasBeats = false;
+        int beats = 0;
+        double timeSec = 0.0;
+        computeBeatsAndTime(playPosition, samplePosition, &hasBeats, &beats, &timeSec);
+        if (samplePosition >= playPosition + 1.0) {
+            // Upcoming.
+            if (!hasBeats) {
+                if (samplePosition < fallbackPosition) {
+                    fallbackPosition = samplePosition;
+                    fallbackIndex = i;
+                }
+            } else if (m_etaWindowBeats <= 0 || beats <= m_etaWindowBeats) {
+                items.push_back({i, samplePosition, beats, timeSec, false});
+            }
+        } else if (hasBeats && m_etaAfterglowBeats > 0 && -beats <= m_etaAfterglowBeats) {
+            // Passed, still lingering.
+            items.push_back({i, samplePosition, std::max(0, beats), 0.0, true});
+        }
+    }
+    if (items.empty() && fallbackIndex >= 0) {
+        bool hasBeats = false;
+        int beats = 0;
+        double timeSec = 0.0;
+        computeBeatsAndTime(playPosition, fallbackPosition, &hasBeats, &beats, &timeSec);
+        items.push_back({fallbackIndex, fallbackPosition, std::max(0, beats), timeSec, false});
+    }
+
+    if (items.empty()) {
+        hideAllEtaNodes();
         return;
     }
 
-    updateUntilNote(playPosition, nextNotePosition);
+    // Stack earliest-arriving on top (concept section 6: notes orient upward, the
+    // later one slides underneath).
+    std::sort(items.begin(), items.end(), [](const EtaItem& a, const EtaItem& b) {
+        return a.position < b.position;
+    });
 
     auto* pContext = m_waveformRenderer->getContext();
     const float boxHeight = etaBoxHeight();
     const QColor textColor = contrastingTextColor(m_color);
 
-    // Digit atlas in the shared note font and text color, without the outline,
-    // so the countdown looks exactly like the baked content text.
-    m_pDigitsNode->updateTexture(pContext,
+    // Shared digit atlas params (font, height, color). ensureEtaDigitNode(0) gives
+    // us a node to measure the countdown-field columns with; updateTexture is a
+    // no-op when the params are unchanged, so building all nodes is cheap.
+    DigitsRenderNode* pAtlas = ensureEtaDigitNode(0);
+    pAtlas->updateTexture(pContext,
             static_cast<float>(kEtaFontPointSize),
             boxHeight,
             devicePixelRatio,
@@ -419,95 +524,95 @@ void allshader::WaveformRenderNotes::update() {
             /*withOutline=*/false,
             /*fontFamily=*/QString());
 
-    const QString beatsStr =
-            m_etaShowBeats ? QString::number(m_beatsUntilNote) : QString{};
-    const QString timeStr =
-            m_etaShowTime ? timeSecToString(m_timeUntilNote) : QString{};
-
-    const float ch = m_pDigitsNode->height();
-    const float gapDigits = ch * 0.75f; // gap update() inserts between beats and time
-
-    // Reserve fixed columns from worst-case-width templates (each digit as the
-    // full-width '8', colon/dot kept). The beats are right-aligned against the
-    // column edge, so neither the time after them nor the content shifts as the
-    // beat digit count changes.
-    const auto toTemplate = [](const QString& s) {
-        QString tpl = s;
-        for (QChar& c : tpl) {
-            if (c.isDigit()) {
-                c = QChar('8');
-            }
-        }
-        return tpl;
-    };
-    const QString beatsTpl = beatsStr.isEmpty()
-            ? QString{}
-            : QString(std::max(3, static_cast<int>(beatsStr.length())), QChar('8'));
-    const QString timeTpl = toTemplate(timeStr);
-
+    // One uniform countdown-field width for every bar, from worst-case-width
+    // templates (each digit as the full-width '8'; the beats column sized to the
+    // window's digit count). This keeps all bars' content aligned in a column and
+    // stops the layout shifting as the live numbers count down.
+    const float gapDigits = pAtlas->height() * kDigitsGapFactor;
+    const int beatsDigits = std::max(2,
+            static_cast<int>(QString::number(std::max(1, m_etaWindowBeats)).length()));
+    const QString beatsTpl = m_etaShowBeats ? QString(beatsDigits, QChar('8')) : QString{};
+    const QString timeTpl = m_etaShowTime ? QStringLiteral("8:88.88") : QString{};
     const float beatsColWidth =
-            beatsStr.isEmpty() ? 0.f : m_pDigitsNode->measure(beatsTpl, QString{}, false);
+            beatsTpl.isEmpty() ? 0.f : pAtlas->measure(beatsTpl, QString{}, false);
     const float timeColWidth =
-            timeStr.isEmpty() ? 0.f : m_pDigitsNode->measure(QString{}, timeTpl, false);
+            timeTpl.isEmpty() ? 0.f : pAtlas->measure(QString{}, timeTpl, false);
     const float innerGap = (beatsColWidth > 0.f && timeColWidth > 0.f) ? gapDigits : 0.f;
+    const float fieldWidth = (beatsColWidth > 0.f || timeColWidth > 0.f)
+            ? kFieldPadX + beatsColWidth + innerGap + timeColWidth + kFieldPadX
+            : 0.f;
 
-    constexpr float kFieldPadX = 6.f;
-    const float fieldWidth =
-            kFieldPadX + beatsColWidth + innerGap + timeColWidth + kFieldPadX;
-
-    // (Re)bake the bar only when its content, field width, dpr or color changes.
-    const QString content = notes[nextNoteIndex]->getContent();
-    if (!m_pEtaBarNode) {
-        auto pNode = std::make_unique<NoteLabelNode>(
-                pContext, bakeEtaBar(content, fieldWidth, devicePixelRatio));
-        m_pEtaBarNode = pNode.get();
-        m_pEtaBarNodesParent->appendChildNode(std::move(pNode));
-        m_cachedEtaBarContent = content;
-        m_cachedEtaBarFieldWidth = fieldWidth;
-        m_cachedEtaBarDevicePixelRatio = devicePixelRatio;
-        m_cachedEtaBarColor = m_color;
-    } else if (content != m_cachedEtaBarContent ||
-            fieldWidth != m_cachedEtaBarFieldWidth ||
-            devicePixelRatio != m_cachedEtaBarDevicePixelRatio ||
-            m_color != m_cachedEtaBarColor) {
-        m_pEtaBarNode->updateTexture(
-                pContext, bakeEtaBar(content, fieldWidth, devicePixelRatio));
-        m_cachedEtaBarContent = content;
-        m_cachedEtaBarFieldWidth = fieldWidth;
-        m_cachedEtaBarDevicePixelRatio = devicePixelRatio;
-        m_cachedEtaBarColor = m_color;
-    }
-
-    const float barWidth = m_pEtaBarNode->textureWidth() / devicePixelRatio;
     const float playMarkerPos = static_cast<float>(
             m_waveformRenderer->getPlayMarkerPosition() *
             m_waveformRenderer->getLength());
-    const float blockLeft = roundToPixel(
-            m_etaAlignRightEdgeAtPlayhead ? playMarkerPos - barWidth : playMarkerPos);
-    const float boxTop = roundToPixel(breadth / 2.f - boxHeight / 2.f);
 
-    m_pEtaBarNode->setQuad(blockLeft, boxTop, devicePixelRatio);
+    int shown = 0;
+    for (int k = 0; k < static_cast<int>(items.size()); ++k) {
+        const float boxTop = roundToPixel(kStackTopMargin + k * (boxHeight + kStackGap));
+        if (boxTop + boxHeight > breadth) {
+            // Would run past the bottom of the waveform: drop this and all the
+            // (lower) bars below it (concept section 10).
+            break;
+        }
+        const EtaItem& item = items[k];
+        const float opacity = item.passed ? m_etaAfterglowOpacity : 1.f;
+        const QString content = notes[item.noteIndex]->getContent();
 
-    // Live number in the field region [blockLeft, blockLeft + fieldWidth]: beats
-    // right-aligned against a fixed column edge (so the time stays put), time
-    // immediately after at a fixed offset.
-    const float beatsWidth =
-            beatsStr.isEmpty() ? 0.f : m_pDigitsNode->measure(beatsStr, QString{}, false);
-    const float digitsX =
-            roundToPixel(blockLeft + kFieldPadX + (beatsColWidth - beatsWidth));
-    // Baseline-align the digits with the content text (both use etaBaselineY).
-    const float digitsY =
-            roundToPixel(boxTop + etaBaselineY() - m_pDigitsNode->baseline());
-    m_pDigitsNode->update(digitsX, digitsY, false, beatsStr, timeStr);
+        NoteLabelNode* pBar = ensureEtaBarNode(
+                k, pContext, content, fieldWidth, opacity, devicePixelRatio);
+        const float barWidth = pBar->textureWidth() / devicePixelRatio;
+        const float blockLeft = roundToPixel(
+                m_etaAlignRightEdgeAtPlayhead ? playMarkerPos - barWidth : playMarkerPos);
+        pBar->setQuad(blockLeft, boxTop, devicePixelRatio);
+
+        DigitsRenderNode* pDigits = ensureEtaDigitNode(k);
+        pDigits->updateTexture(pContext,
+                static_cast<float>(kEtaFontPointSize),
+                boxHeight,
+                devicePixelRatio,
+                textColor,
+                /*withOutline=*/false,
+                /*fontFamily=*/QString());
+        if (item.passed) {
+            // The countdown is over; the dimmed bar lingers without a number.
+            pDigits->clear();
+        } else {
+            const QString beatsStr =
+                    m_etaShowBeats ? QString::number(item.beats) : QString{};
+            const QString timeStr =
+                    m_etaShowTime ? timeSecToString(item.timeSec) : QString{};
+            // Beats right-aligned against the fixed column edge (so the time after
+            // them stays put), time immediately after at a fixed offset.
+            const float beatsWidth =
+                    beatsStr.isEmpty() ? 0.f : pDigits->measure(beatsStr, QString{}, false);
+            const float digitsX =
+                    roundToPixel(blockLeft + kFieldPadX + (beatsColWidth - beatsWidth));
+            const float digitsY =
+                    roundToPixel(boxTop + etaBaselineY() - pDigits->baseline());
+            pDigits->update(digitsX, digitsY, false, beatsStr, timeStr);
+        }
+        ++shown;
+    }
+
+    // Hide the unused tail of both pools.
+    for (int k = shown; k < static_cast<int>(m_etaBarSlots.size()); ++k) {
+        if (m_etaBarSlots[k].pNode) {
+            m_etaBarSlots[k].pNode->hideQuad();
+        }
+    }
+    for (int k = shown; k < static_cast<int>(m_etaDigitNodes.size()); ++k) {
+        m_etaDigitNodes[k]->clear();
+    }
 }
 
-void allshader::WaveformRenderNotes::updateUntilNote(
-        double playPosition, double nextNotePosition) {
-    m_beatsUntilNote = 0;
-    m_timeUntilNote = 0.0;
-    if (nextNotePosition == std::numeric_limits<double>::max()) {
-        return;
-    }
+void allshader::WaveformRenderNotes::computeBeatsAndTime(double playPosition,
+        double notePosition,
+        bool* hasBeats,
+        int* beats,
+        double* timeSec) const {
+    *hasBeats = false;
+    *beats = 0;
+    *timeSec = 0.0;
 
     const TrackPointer trackInfo = m_waveformRenderer->getTrackInfo();
     if (!trackInfo) {
@@ -518,37 +623,47 @@ void allshader::WaveformRenderNotes::updateUntilNote(
     const double remainingTime =
             m_pTimeRemainingControl ? m_pTimeRemainingControl->get() : 0.0;
 
-    // Beats until the note (same iterator logic as
-    // WaveformRenderMark::updateUntilMark).
+    // Full beats remaining to the note, floored: the count drops to 0 as soon as
+    // less than one whole beat is left (Raik's request), rather than rounding to
+    // the nearest beat like WaveformRenderMark::updateUntilMark does. This needs
+    // the fractional beat position of both the play and the note position, so a
+    // partly-consumed beat is not counted. The signed result is positive for an
+    // upcoming note and negative for one that has already passed.
     mixxx::BeatsPointer trackBeats = trackInfo->getBeats();
     if (trackBeats) {
-        auto itA = trackBeats->iteratorFrom(
-                mixxx::audio::FramePos::fromEngineSamplePos(playPosition));
-        auto itB = trackBeats->iteratorFrom(
-                mixxx::audio::FramePos::fromEngineSamplePos(nextNotePosition));
+        // The beat at or before a position, plus the fraction (0..1) of how far
+        // the position lies into that beat.
+        const auto beatBeforeWithFraction =
+                [&trackBeats](double pos, double* fraction) {
+                    auto it = trackBeats->iteratorFrom(
+                            mixxx::audio::FramePos::fromEngineSamplePos(pos));
+                    // iteratorFrom returns the first beat at or after pos; step
+                    // back to the beat at or before it (tolerate ~1 sample).
+                    if (it->toEngineSamplePos() > pos + 1.0) {
+                        it = it - 1;
+                    }
+                    const double prev = it->toEngineSamplePos();
+                    const double next = (it + 1)->toEngineSamplePos();
+                    *fraction = (next > prev)
+                            ? std::clamp((pos - prev) / (next - prev), 0.0, 1.0)
+                            : 0.0;
+                    return it;
+                };
 
-        // itB is the beat at or after nextNotePosition; pick the closer of it
-        // and the previous beat.
-        if (itB->toEngineSamplePos() > nextNotePosition) {
-            if (nextNotePosition - (itB - 1)->toEngineSamplePos() <
-                    itB->toEngineSamplePos() - nextNotePosition) {
-                itB--;
-            }
-        }
-
-        if (std::abs(itA->toEngineSamplePos() - playPosition) < 1) {
-            m_beatsUntilNote = static_cast<int>(std::distance(itA, itB));
-        } else {
-            itA--;
-            m_beatsUntilNote = static_cast<int>(std::distance(itA, itB));
-        }
+        double fracPlay = 0.0;
+        double fracNote = 0.0;
+        const auto itPlay = beatBeforeWithFraction(playPosition, &fracPlay);
+        const auto itNote = beatBeforeWithFraction(notePosition, &fracNote);
+        const double wholeBeats = static_cast<double>(itNote - itPlay);
+        *beats = static_cast<int>(std::floor(wholeBeats - fracPlay + fracNote));
+        *hasBeats = true;
     }
 
     // As endPosition - playPosition corresponds with remainingTime, take the
-    // proportional part up to nextNotePosition.
+    // proportional part up to notePosition (>= 0 for upcoming notes).
     if (endPosition > playPosition) {
-        m_timeUntilNote = std::max(0.0,
-                remainingTime * (nextNotePosition - playPosition) /
+        *timeSec = std::max(0.0,
+                remainingTime * (notePosition - playPosition) /
                         (endPosition - playPosition));
     }
 }

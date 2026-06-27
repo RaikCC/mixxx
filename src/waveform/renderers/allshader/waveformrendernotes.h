@@ -16,6 +16,7 @@ class SkinContext;
 class ControlProxy;
 
 namespace rendergraph {
+class Context;
 class GeometryNode;
 } // namespace rendergraph
 
@@ -88,27 +89,53 @@ class allshader::WaveformRenderNotes final
     void setEtaAlignRightEdgeAtPlayhead(bool alignRight) {
         m_etaAlignRightEdgeAtPlayhead = alignRight;
     }
+    // Live-ETA preview window length, in beats (concept section 7
+    // "Vorschaufenster", e.g. 64). Only notes arriving within this many beats are
+    // shown in the live view; <= 0 means no limit. Same unit as the countdown.
+    void setEtaWindowBeats(int beats) {
+        m_etaWindowBeats = beats;
+    }
+    // How long, in beats, a note keeps lingering (dimmed) after it has passed the
+    // play marker before it is hidden (concept section 7 "Nachleuchten"). <= 0
+    // disables the afterglow.
+    void setEtaAfterglowBeats(int beats) {
+        m_etaAfterglowBeats = beats;
+    }
+    // Opacity (0..1) of a note while it lingers after passing the play marker
+    // (concept section 7 "Nachleuchten"). Kept fairly opaque so the text stays
+    // readable; the preferences UI in phase 2d will drive this.
+    void setEtaAfterglowOpacity(float opacity) {
+        m_etaAfterglowOpacity = opacity;
+    }
 
   private:
     QImage bakeLabel(const QString& content, float devicePixelRatio) const;
     // Bakes the live-ETA bar: one continuous rounded box holding an empty
     // countdown field (width fieldWidth, on the left, where the live digits are
-    // drawn on top) followed by the note content text.
+    // drawn on top) followed by the note content text. opacity (0..1) dims the
+    // whole bar, e.g. for the afterglow of a note that has already passed.
     QImage bakeEtaBar(const QString& content,
             float fieldWidth,
+            float opacity,
             float devicePixelRatio) const;
     void rebuildLabels(const QList<NotePointer>& notes, float devicePixelRatio);
 
-    // Computes the beats and time from the play position to the next upcoming
-    // note. Modeled on WaveformRenderMark::updateUntilMark.
-    void updateUntilNote(double playPosition, double nextNotePosition);
+    // Computes the (signed) beats and seconds from the play position to a note
+    // position. Positive = upcoming, <= 0 = already passed. *hasBeats is false
+    // when the track has no beat grid (then *beats is 0). Modeled on
+    // WaveformRenderMark::updateUntilMark.
+    void computeBeatsAndTime(double playPosition,
+            double notePosition,
+            bool* hasBeats,
+            int* beats,
+            double* timeSec) const;
 
     QColor m_color;
 
     rendergraph::GeometryNode* m_pLinesNode{};
     rendergraph::Node* m_pLabelNodesParent{};
     rendergraph::Node* m_pEtaBarNodesParent{};
-    DigitsRenderNode* m_pDigitsNode{};
+    rendergraph::Node* m_pEtaDigitsParent{};
 
     // Raw pointers into m_pLabelNodesParent's children, one per note in the same
     // order as Track::getNotes(); ownership stays with the parent node.
@@ -117,23 +144,40 @@ class allshader::WaveformRenderNotes final
     float m_cachedDevicePixelRatio{0.f};
     float m_cachedBreadth{0.f};
 
-    // The live-ETA bar (background box + content text); created lazily (needs a
-    // GL context) and re-baked only when its content, field width, dpr or color
-    // changes. The live countdown digits are drawn on top of it every frame.
-    NoteLabelNode* m_pEtaBarNode{};
-    QString m_cachedEtaBarContent;
-    float m_cachedEtaBarFieldWidth{-1.f};
-    float m_cachedEtaBarDevicePixelRatio{0.f};
-    QColor m_cachedEtaBarColor;
+    // One live-ETA bar (background box + content text) per displayed note, plus a
+    // matching countdown-digits node, stacked vertically at the play marker. The
+    // pools grow on demand -- creating a texture needs a current GL context, so
+    // the nodes are created in update(); unused slots are hidden, never destroyed.
+    // A bar is re-baked only when its content, field width, opacity, dpr or color
+    // changes; the digits are repositioned every frame.
+    struct EtaBarSlot {
+        NoteLabelNode* pNode{};
+        QString content;
+        float fieldWidth{-1.f};
+        float opacity{-1.f};
+        float devicePixelRatio{0.f};
+        QColor color;
+    };
+    std::vector<EtaBarSlot> m_etaBarSlots;
+    std::vector<DigitsRenderNode*> m_etaDigitNodes;
+
+    NoteLabelNode* ensureEtaBarNode(int index,
+            rendergraph::Context* pContext,
+            const QString& content,
+            float fieldWidth,
+            float opacity,
+            float devicePixelRatio);
+    DigitsRenderNode* ensureEtaDigitNode(int index);
 
     // Live-ETA state and options.
-    int m_beatsUntilNote{0};
-    double m_timeUntilNote{0.0};
     std::unique_ptr<ControlProxy> m_pPlayControl;
     std::unique_ptr<ControlProxy> m_pTimeRemainingControl;
     bool m_etaShowBeats{true};
     bool m_etaShowTime{true};
     bool m_etaAlignRightEdgeAtPlayhead{false};
+    int m_etaWindowBeats{64};
+    int m_etaAfterglowBeats{4};
+    float m_etaAfterglowOpacity{0.6f};
 
     DISALLOW_COPY_AND_ASSIGN(WaveformRenderNotes);
 };
