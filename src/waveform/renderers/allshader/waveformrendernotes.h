@@ -91,6 +91,12 @@ class allshader::WaveformRenderNotes final
 
   private:
     QImage bakeLabel(const QString& content, float devicePixelRatio) const;
+    // Bakes the live-ETA bar: one continuous rounded box holding an empty
+    // countdown field (width fieldWidth, on the left, where the live digits are
+    // drawn on top) followed by the note content text.
+    QImage bakeEtaBar(const QString& content,
+            float fieldWidth,
+            float devicePixelRatio) const;
     void rebuildLabels(const QList<NotePointer>& notes, float devicePixelRatio);
 
     // Computes the beats and time from the play position to the next upcoming
@@ -101,6 +107,7 @@ class allshader::WaveformRenderNotes final
 
     rendergraph::GeometryNode* m_pLinesNode{};
     rendergraph::Node* m_pLabelNodesParent{};
+    rendergraph::Node* m_pEtaBarNodesParent{};
     DigitsRenderNode* m_pDigitsNode{};
 
     // Raw pointers into m_pLabelNodesParent's children, one per note in the same
@@ -109,6 +116,15 @@ class allshader::WaveformRenderNotes final
     QStringList m_cachedContents;
     float m_cachedDevicePixelRatio{0.f};
     float m_cachedBreadth{0.f};
+
+    // The live-ETA bar (background box + content text); created lazily (needs a
+    // GL context) and re-baked only when its content, field width, dpr or color
+    // changes. The live countdown digits are drawn on top of it every frame.
+    NoteLabelNode* m_pEtaBarNode{};
+    QString m_cachedEtaBarContent;
+    float m_cachedEtaBarFieldWidth{-1.f};
+    float m_cachedEtaBarDevicePixelRatio{0.f};
+    QColor m_cachedEtaBarColor;
 
     // Live-ETA state and options.
     int m_beatsUntilNote{0};

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <QColor>
+#include <QString>
+
 #include "rendergraph/context.h"
 #include "rendergraph/geometrynode.h"
 #include "util/class.h"
@@ -17,10 +20,17 @@ class allshader::DigitsRenderNode : public rendergraph::GeometryNode {
     DigitsRenderNode();
     ~DigitsRenderNode();
 
+    // The default style (white fill with a blurred dark outline, Open Sans) is
+    // used by the cue until-mark display. Callers can override the text color,
+    // disable the outline, and pick a font family (empty = application default)
+    // so the digits can match surrounding text, e.g. the ETA note labels.
     void updateTexture(rendergraph::Context* pContext,
             float fontPointSize,
             float maxHeight,
-            float devicePixelRatio);
+            float devicePixelRatio,
+            const QColor& textColor = QColor(Qt::white),
+            bool withOutline = true,
+            const QString& fontFamily = QStringLiteral("Open Sans"));
 
     void update(
             float x,
@@ -32,6 +42,10 @@ class allshader::DigitsRenderNode : public rendergraph::GeometryNode {
     void clear();
 
     float height() const;
+
+    // Distance in logical pixels from the top of the rendered block to the text
+    // baseline, so callers can baseline-align the digits with adjacent text.
+    float baseline() const;
 
     // Width in logical pixels that update() would occupy for the given strings,
     // using the same layout. Valid after updateTexture has been called at least
@@ -49,7 +63,11 @@ class allshader::DigitsRenderNode : public rendergraph::GeometryNode {
     float m_width[12];
     float m_fontPointSize{};
     float m_height{};
+    float m_baseline{};
     float m_maxHeight{};
     float m_adjustedFontPointSize{};
+    QColor m_textColor{Qt::white};
+    bool m_withOutline{true};
+    QString m_fontFamily{QStringLiteral("Open Sans")};
     DISALLOW_COPY_AND_ASSIGN(DigitsRenderNode);
 };

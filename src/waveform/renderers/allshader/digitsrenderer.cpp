@@ -73,13 +73,25 @@ float allshader::DigitsRenderNode::height() const {
     return m_height;
 }
 
+float allshader::DigitsRenderNode::baseline() const {
+    return m_baseline;
+}
+
 void allshader::DigitsRenderNode::updateTexture(rendergraph::Context* pContext,
         float fontPointSize,
         float maxHeight,
-        float devicePixelRatio) {
-    if (fontPointSize == m_fontPointSize && maxHeight == m_maxHeight) {
+        float devicePixelRatio,
+        const QColor& textColor,
+        bool withOutline,
+        const QString& fontFamily) {
+    if (fontPointSize == m_fontPointSize && maxHeight == m_maxHeight &&
+            textColor == m_textColor && withOutline == m_withOutline &&
+            fontFamily == m_fontFamily) {
         return;
     }
+    m_textColor = textColor;
+    m_withOutline = withOutline;
+    m_fontFamily = fontFamily;
     if (maxHeight != m_maxHeight) {
         m_maxHeight = maxHeight;
         m_adjustedFontPointSize = 0.f;
@@ -94,23 +106,31 @@ void allshader::DigitsRenderNode::updateTexture(rendergraph::Context* pContext,
     }
 
     float space;
+    // Vertical margin above/below the glyphs in the atlas. With an outline it is
+    // the outline space; without one we still keep a small margin so ascenders
+    // are not clipped at the texture edge (horizontal packing stays tight).
+    float vSpace;
 
     QFont font;
     QFontMetricsF metrics{font};
-    font.setFamily("Open Sans");
+    if (!m_fontFamily.isEmpty()) {
+        font.setFamily(m_fontFamily);
+    }
     float maxTextHeight;
     bool retry = false;
     do {
         // At small sizes, we need to limit the pen width, to avoid drawing artifacts.
         // (The factor 0.25 was found with trial and error)
         const int maxPenWidth = 1 + std::lround(fontPointSize * 0.25f);
-        // The pen width is twice the outline size
-        m_penWidth = std::min(maxPenWidth, OUTLINE_SIZE * 2);
+        // The pen width is twice the outline size. Without an outline there is
+        // no surrounding space, so the digits pack like normal text.
+        m_penWidth = m_withOutline ? std::min(maxPenWidth, OUTLINE_SIZE * 2) : 0;
 
         space = static_cast<float>(m_penWidth) / 2;
+        vSpace = m_withOutline ? space : 1.5f;
         font.setPointSizeF(fontPointSize);
 
-        const float maxHeightWithoutSpace = std::floor(maxHeight) - space * 2 - 1;
+        const float maxHeightWithoutSpace = std::floor(maxHeight) - vSpace * 2 - 1;
 
         metrics = QFontMetricsF{font};
 
@@ -134,9 +154,10 @@ void allshader::DigitsRenderNode::updateTexture(rendergraph::Context* pContext,
         }
     } while (retry);
 
-    m_height = static_cast<float>(std::ceil(maxTextHeight)) + space * 2.f + 1.f;
+    m_height = static_cast<float>(std::ceil(maxTextHeight)) + vSpace * 2.f + 1.f;
 
-    const float y = maxTextHeight + space - 0.5f;
+    const float y = maxTextHeight + vSpace - 0.5f;
+    m_baseline = y;
 
     auto roundToPixel = createFunctionRoundToPixel(devicePixelRatio);
 
@@ -163,7 +184,7 @@ void allshader::DigitsRenderNode::updateTexture(rendergraph::Context* pContext,
     image.setDevicePixelRatio(devicePixelRatio);
     image.fill(Qt::transparent);
 
-    {
+    if (m_withOutline) {
         // Draw digits with dark outline
         QPainter painter(&image);
 
@@ -179,9 +200,7 @@ void allshader::DigitsRenderNode::updateTexture(rendergraph::Context* pContext,
             path.addText(QPointF(xs[i] + space + 0.5, y), font, text);
         }
         painter.drawPath(path);
-    }
 
-    {
         // Apply Gaussian blur to dark outline
         auto blur = std::make_unique<QGraphicsBlurEffect>();
         blur->setBlurRadius(static_cast<float>(m_penWidth) / 3);
@@ -191,9 +210,9 @@ void allshader::DigitsRenderNode::updateTexture(rendergraph::Context* pContext,
         item.setPixmap(QPixmap::fromImage(image));
         item.setGraphicsEffect(blur.release());
         image.fill(Qt::transparent);
-        QPainter painter(&image);
+        QPainter blurPainter(&image);
         scene.addItem(&item);
-        scene.render(&painter, QRectF(), QRectF(0, 0, image.width(), image.height()));
+        scene.render(&blurPainter, QRectF(), QRectF(0, 0, image.width(), image.height()));
     }
 
     {
@@ -202,8 +221,10 @@ void allshader::DigitsRenderNode::updateTexture(rendergraph::Context* pContext,
         painter.setRenderHint(QPainter::Antialiasing);
 
         painter.setFont(font);
-        painter.setPen(Qt::white);
-        painter.setBrush(Qt::white);
+        // Stroking the glyph path (as the outlined style does) thickens the
+        // digits; without an outline, fill only for a normal text weight.
+        painter.setPen(m_withOutline ? QPen(m_textColor) : QPen(Qt::NoPen));
+        painter.setBrush(m_textColor);
 
         QPainterPath path;
         for (int i = 0; i < NUM_CHARS; i++) {

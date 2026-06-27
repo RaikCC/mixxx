@@ -25,7 +25,6 @@
 #include "util/roundtopixel.h"
 #include "waveform/renderers/allshader/digitsrenderer.h"
 #include "waveform/renderers/waveformwidgetrenderer.h"
-#include "waveform/waveformwidgetfactory.h"
 #include "widget/wskincolor.h"
 
 using namespace rendergraph;
@@ -79,6 +78,36 @@ class NoteLabelNode : public rendergraph::GeometryNode {
 
 namespace {
 
+// One shared font size for the note labels and the live-ETA countdown digits,
+// so the two read as a single unit (concept section 9 has a single note font
+// size; the preferences UI in phase 2d will drive this). Padding around the
+// text inside the rounded boxes.
+constexpr double kEtaFontPointSize = 10.0;
+constexpr float kBoxPaddingX = 4.f;
+constexpr float kBoxPaddingY = 2.f;
+
+QFont etaFont() {
+    QFont font;
+    font.setPointSizeF(kEtaFontPointSize);
+    return font;
+}
+
+// Logical height of a note box (label or countdown field) for the shared font.
+float etaBoxHeight() {
+    const QFontMetricsF metrics{etaFont()};
+    return std::ceil(static_cast<float>(metrics.height()) + 2.f * kBoxPaddingY);
+}
+
+// Text baseline (logical px from the top of a note box) for the shared font, so
+// the countdown digits and the content text can share a single baseline.
+float etaBaselineY() {
+    const QFontMetricsF metrics{etaFont()};
+    return etaBoxHeight() / 2.f +
+            (static_cast<float>(metrics.ascent()) -
+                    static_cast<float>(metrics.descent())) /
+                    2.f;
+}
+
 QColor contrastingTextColor(const QColor& background) {
     // Rec. 601 luma: pick black text on a light background, white on a dark one.
     const double luma = 0.299 * background.redF() +
@@ -123,6 +152,14 @@ allshader::WaveformRenderNotes::WaveformRenderNotes(
         appendChildNode(std::move(pNode));
     }
     {
+        // Parent for the live-ETA bar (background + content), drawn below the
+        // digits. The bar node itself is created lazily in update() (it needs a
+        // GL context to upload its texture).
+        auto pNode = std::make_unique<Node>();
+        m_pEtaBarNodesParent = pNode.get();
+        appendChildNode(std::move(pNode));
+    }
+    {
         // Drawn last (on top) -- the live-ETA countdown digits at the play marker.
         auto pNode = std::make_unique<DigitsRenderNode>();
         m_pDigitsNode = pNode.get();
@@ -162,16 +199,12 @@ QImage allshader::WaveformRenderNotes::bakeLabel(
         text = QStringLiteral("(empty)"); // placeholder for an empty note
     }
 
-    QFont font;
-    font.setPointSizeF(9.0);
+    const QFont font = etaFont();
     const QFontMetricsF metrics{font};
 
-    constexpr float kPaddingX = 4.f;
-    constexpr float kPaddingY = 2.f;
     const float w = std::ceil(
-            static_cast<float>(metrics.horizontalAdvance(text)) + 2.f * kPaddingX);
-    const float h = std::ceil(
-            static_cast<float>(metrics.height()) + 2.f * kPaddingY);
+            static_cast<float>(metrics.horizontalAdvance(text)) + 2.f * kBoxPaddingX);
+    const float h = etaBoxHeight();
 
     QImage image(static_cast<int>(std::lround(w * devicePixelRatio)),
             static_cast<int>(std::lround(h * devicePixelRatio)),
@@ -191,9 +224,51 @@ QImage allshader::WaveformRenderNotes::bakeLabel(
     painter.setFont(font);
     painter.setPen(contrastingTextColor(background));
     painter.drawText(
-            QRectF(kPaddingX, kPaddingY, w - 2.f * kPaddingX, h - 2.f * kPaddingY),
+            QRectF(kBoxPaddingX, kBoxPaddingY, w - 2.f * kBoxPaddingX, h - 2.f * kBoxPaddingY),
             Qt::AlignLeft | Qt::AlignVCenter,
             text);
+    painter.end();
+
+    return image;
+}
+
+QImage allshader::WaveformRenderNotes::bakeEtaBar(
+        const QString& content, float fieldWidth, float devicePixelRatio) const {
+    QString text = content.simplified();
+    if (text.isEmpty()) {
+        text = QStringLiteral("(empty)");
+    }
+
+    const QFont font = etaFont();
+    const QFontMetricsF metrics{font};
+    const float h = etaBoxHeight();
+    const float textWidth =
+            std::ceil(static_cast<float>(metrics.horizontalAdvance(text)));
+
+    // One continuous bar: [ countdown field | inner gap | content | padding ].
+    // The field region (width fieldWidth, on the left) is left empty here; the
+    // live digits are drawn on top of it each frame.
+    constexpr float kInnerGap = 6.f;
+    const float width = fieldWidth + kInnerGap + textWidth + kBoxPaddingX;
+
+    QImage image(static_cast<int>(std::lround(width * devicePixelRatio)),
+            static_cast<int>(std::lround(h * devicePixelRatio)),
+            QImage::Format_ARGB32_Premultiplied);
+    image.setDevicePixelRatio(devicePixelRatio);
+    image.fill(Qt::transparent);
+
+    QColor background = m_color;
+    background.setAlphaF(0.85f);
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::TextAntialiasing);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(background);
+    painter.drawRoundedRect(QRectF(0.5, 0.5, width - 1.0, h - 1.0), 3.0, 3.0);
+    painter.setFont(font);
+    painter.setPen(contrastingTextColor(background));
+    painter.drawText(QPointF(fieldWidth + kInnerGap, etaBaselineY()), text);
     painter.end();
 
     return image;
@@ -308,28 +383,41 @@ void allshader::WaveformRenderNotes::update() {
             m_labelNodes[i]->setQuad(x, 0.f, devicePixelRatio);
         }
         m_pDigitsNode->clear();
+        if (m_pEtaBarNode) {
+            m_pEtaBarNode->hideQuad();
+        }
         return;
     }
 
-    // --- live-ETA view (concept section 7): a countdown + the next note's
-    // content, anchored at the play marker. All other labels are hidden.
+    // --- live-ETA view (concept section 7): one continuous bar -- a fixed
+    // countdown field plus the next note's content -- anchored at the play
+    // marker. All the timecode-anchored labels are hidden.
     for (int i = 0; i < labelCount; ++i) {
         m_labelNodes[i]->hideQuad();
     }
     if (nextNoteIndex < 0) {
         m_pDigitsNode->clear();
+        if (m_pEtaBarNode) {
+            m_pEtaBarNode->hideQuad();
+        }
         return;
     }
 
     updateUntilNote(playPosition, nextNotePosition);
 
-    auto* pWaveformWidgetFactory = WaveformWidgetFactory::instance();
-    const float maxHeightForText =
-            std::roundf(breadth * pWaveformWidgetFactory->getUntilMarkTextHeightLimit());
-    m_pDigitsNode->updateTexture(m_waveformRenderer->getContext(),
-            static_cast<float>(pWaveformWidgetFactory->getUntilMarkTextPointSize()),
-            maxHeightForText,
-            devicePixelRatio);
+    auto* pContext = m_waveformRenderer->getContext();
+    const float boxHeight = etaBoxHeight();
+    const QColor textColor = contrastingTextColor(m_color);
+
+    // Digit atlas in the shared note font and text color, without the outline,
+    // so the countdown looks exactly like the baked content text.
+    m_pDigitsNode->updateTexture(pContext,
+            static_cast<float>(kEtaFontPointSize),
+            boxHeight,
+            devicePixelRatio,
+            textColor,
+            /*withOutline=*/false,
+            /*fontFamily=*/QString());
 
     const QString beatsStr =
             m_etaShowBeats ? QString::number(m_beatsUntilNote) : QString{};
@@ -337,35 +425,80 @@ void allshader::WaveformRenderNotes::update() {
             m_etaShowTime ? timeSecToString(m_timeUntilNote) : QString{};
 
     const float ch = m_pDigitsNode->height();
-    const bool multiLine =
-            m_etaShowBeats && m_etaShowTime && ch * 2.f < maxHeightForText;
+    const float gapDigits = ch * 0.75f; // gap update() inserts between beats and time
 
-    const float digitsWidth = m_pDigitsNode->measure(beatsStr, timeStr, multiLine);
+    // Reserve fixed columns from worst-case-width templates (each digit as the
+    // full-width '8', colon/dot kept). The beats are right-aligned against the
+    // column edge, so neither the time after them nor the content shifts as the
+    // beat digit count changes.
+    const auto toTemplate = [](const QString& s) {
+        QString tpl = s;
+        for (QChar& c : tpl) {
+            if (c.isDigit()) {
+                c = QChar('8');
+            }
+        }
+        return tpl;
+    };
+    const QString beatsTpl = beatsStr.isEmpty()
+            ? QString{}
+            : QString(std::max(3, static_cast<int>(beatsStr.length())), QChar('8'));
+    const QString timeTpl = toTemplate(timeStr);
 
-    NoteLabelNode* pLabel = m_labelNodes[nextNoteIndex];
-    const float contentWidth = pLabel->textureWidth() / devicePixelRatio;
-    const float contentHeight = pLabel->textureHeight() / devicePixelRatio;
+    const float beatsColWidth =
+            beatsStr.isEmpty() ? 0.f : m_pDigitsNode->measure(beatsTpl, QString{}, false);
+    const float timeColWidth =
+            timeStr.isEmpty() ? 0.f : m_pDigitsNode->measure(QString{}, timeTpl, false);
+    const float innerGap = (beatsColWidth > 0.f && timeColWidth > 0.f) ? gapDigits : 0.f;
 
-    constexpr float kGap = 6.f; // between the countdown and the content
-    const float gap = (digitsWidth > 0.f && contentWidth > 0.f) ? kGap : 0.f;
-    const float totalWidth = digitsWidth + gap + contentWidth;
+    constexpr float kFieldPadX = 6.f;
+    const float fieldWidth =
+            kFieldPadX + beatsColWidth + innerGap + timeColWidth + kFieldPadX;
 
+    // (Re)bake the bar only when its content, field width, dpr or color changes.
+    const QString content = notes[nextNoteIndex]->getContent();
+    if (!m_pEtaBarNode) {
+        auto pNode = std::make_unique<NoteLabelNode>(
+                pContext, bakeEtaBar(content, fieldWidth, devicePixelRatio));
+        m_pEtaBarNode = pNode.get();
+        m_pEtaBarNodesParent->appendChildNode(std::move(pNode));
+        m_cachedEtaBarContent = content;
+        m_cachedEtaBarFieldWidth = fieldWidth;
+        m_cachedEtaBarDevicePixelRatio = devicePixelRatio;
+        m_cachedEtaBarColor = m_color;
+    } else if (content != m_cachedEtaBarContent ||
+            fieldWidth != m_cachedEtaBarFieldWidth ||
+            devicePixelRatio != m_cachedEtaBarDevicePixelRatio ||
+            m_color != m_cachedEtaBarColor) {
+        m_pEtaBarNode->updateTexture(
+                pContext, bakeEtaBar(content, fieldWidth, devicePixelRatio));
+        m_cachedEtaBarContent = content;
+        m_cachedEtaBarFieldWidth = fieldWidth;
+        m_cachedEtaBarDevicePixelRatio = devicePixelRatio;
+        m_cachedEtaBarColor = m_color;
+    }
+
+    const float barWidth = m_pEtaBarNode->textureWidth() / devicePixelRatio;
     const float playMarkerPos = static_cast<float>(
             m_waveformRenderer->getPlayMarkerPosition() *
             m_waveformRenderer->getLength());
-    const float blockLeft = roundToPixel(m_etaAlignRightEdgeAtPlayhead
-                    ? playMarkerPos - totalWidth
-                    : playMarkerPos);
+    const float blockLeft = roundToPixel(
+            m_etaAlignRightEdgeAtPlayhead ? playMarkerPos - barWidth : playMarkerPos);
+    const float boxTop = roundToPixel(breadth / 2.f - boxHeight / 2.f);
 
-    // Digits vertically centered; for a two-line block the first line sits one
-    // line-height above the center (the second is drawn below it by update()).
-    const float digitsY = roundToPixel(
-            multiLine ? breadth / 2.f - ch : breadth / 2.f - ch / 2.f);
-    m_pDigitsNode->update(blockLeft, digitsY, multiLine, beatsStr, timeStr);
+    m_pEtaBarNode->setQuad(blockLeft, boxTop, devicePixelRatio);
 
-    const float contentX = roundToPixel(blockLeft + digitsWidth + gap);
-    const float contentY = roundToPixel(breadth / 2.f - contentHeight / 2.f);
-    pLabel->setQuad(contentX, contentY, devicePixelRatio);
+    // Live number in the field region [blockLeft, blockLeft + fieldWidth]: beats
+    // right-aligned against a fixed column edge (so the time stays put), time
+    // immediately after at a fixed offset.
+    const float beatsWidth =
+            beatsStr.isEmpty() ? 0.f : m_pDigitsNode->measure(beatsStr, QString{}, false);
+    const float digitsX =
+            roundToPixel(blockLeft + kFieldPadX + (beatsColWidth - beatsWidth));
+    // Baseline-align the digits with the content text (both use etaBaselineY).
+    const float digitsY =
+            roundToPixel(boxTop + etaBaselineY() - m_pDigitsNode->baseline());
+    m_pDigitsNode->update(digitsX, digitsY, false, beatsStr, timeStr);
 }
 
 void allshader::WaveformRenderNotes::updateUntilNote(
