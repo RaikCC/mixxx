@@ -173,6 +173,7 @@ void LibraryScanner::run() {
 
         m_libraryHashDao.initialize(dbConnection);
         m_cueDao.initialize(dbConnection);
+        m_notesDao.initialize(dbConnection);
         m_trackDao.initialize(dbConnection);
         m_playlistDao.initialize(dbConnection);
         m_analysisDao.initialize(dbConnection);

@@ -2,19 +2,27 @@
 
 #include <QDragEnterEvent>
 #include <QEvent>
+#include <QMenu>
+#include <algorithm>
 
 #include "control/controlproxy.h"
+#include "mixer/basetrackplayer.h"
+#include "mixer/playermanager.h"
 #include "moc_wwaveformviewer.cpp"
+#include "track/beats.h"
+#include "track/track.h"
 #include "util/dnd.h"
 #include "util/math.h"
 #include "waveform/waveformwidgetfactory.h"
 #include "waveform/widgets/waveformwidgetabstract.h"
 #include "widget/wcuemenupopup.h"
 #include "widget/wglwidget.h"
+#include "widget/wnotemenupopup.h"
 
 WWaveformViewer::WWaveformViewer(
         const QString& group,
         UserSettingsPointer pConfig,
+        PlayerManager* pPlayerManager,
         QWidget* parent)
         : WWidget(parent),
           m_group(group),
@@ -23,11 +31,21 @@ WWaveformViewer::WWaveformViewer(
           m_bScratching(false),
           m_bBending(false),
           m_pCueMenuPopup(make_parented<WCueMenuPopup>(pConfig, this)),
+          m_pNoteMenuPopup(make_parented<WNoteMenuPopup>(this)),
+          m_pPlayerManager(pPlayerManager),
           m_waveformWidget(nullptr) {
     setMouseTracking(true);
     setAcceptDrops(true);
     m_pZoom = new ControlProxy(group, "waveform_zoom", this, ControlFlag::NoAssertIfMissing);
     m_pZoom->connectValueChanged(this, &WWaveformViewer::onZoomChange);
+
+    m_pQuantizeEnabled = new ControlProxy(
+            group, "quantize", this, ControlFlag::NoAssertIfMissing);
+
+    connect(m_pNoteMenuPopup.get(),
+            &WNoteMenuPopup::noteRemoved,
+            this,
+            &WWaveformViewer::slotRemoveNote);
 
     m_pScratchPositionEnable = new ControlProxy(
             group, "scratch_position_enable", this, ControlFlag::NoAssertIfMissing);
@@ -84,6 +102,20 @@ void WWaveformViewer::mousePressEvent(QMouseEvent* event) {
     m_mouseAnchor = event->pos();
 
     if (event->button() == Qt::LeftButton) {
+        // Clicking the content of a standing note opens its editor instead of
+        // scratching (concept section 6: "in den Content klicken öffnet die
+        // Bearbeitung"). Only in the standing view, where the labels are shown.
+        if (!isPlaying()) {
+            NotePointer pNote = m_waveformWidget->getNoteLabelAtPoint(event->pos());
+            if (pNote) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                openNoteEditor(pNote, false, event->globalPosition().toPoint());
+#else
+                openNoteEditor(pNote, false, event->globalPos());
+#endif
+                return;
+            }
+        }
         // If we are pitch-bending then disable and reset because the two
         // shouldn't be used at once.
         if (m_bBending) {
@@ -127,6 +159,43 @@ void WWaveformViewer::mousePressEvent(QMouseEvent* event) {
     }
 }
 
+void WWaveformViewer::mouseDoubleClickEvent(QMouseEvent* event) {
+    if (!m_waveformWidget || m_waveformWidget->getType() == WaveformWidgetType::Empty) {
+        return;
+    }
+    if (event->button() != Qt::LeftButton) {
+        return;
+    }
+    // A double-click is meant for authoring a note, not scratching: undo the
+    // scratch the preceding single press started.
+    if (m_bScratching) {
+        m_pScratchPositionEnable->set(0.0);
+        m_bScratching = false;
+    }
+    // Notes are authored in the standing view; while playing the labels are
+    // hidden and replaced by the live-ETA preview.
+    if (isPlaying()) {
+        return;
+    }
+    const TrackPointer pTrack = m_waveformWidget->getTrackInfo();
+    if (!pTrack) {
+        return;
+    }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QPoint globalPos = event->globalPosition().toPoint();
+#else
+    const QPoint globalPos = event->globalPos();
+#endif
+    // Double-clicking an existing note edits it rather than stacking a new one
+    // on top of it.
+    NotePointer pExisting = m_waveformWidget->getNoteLabelAtPoint(event->pos());
+    if (pExisting) {
+        openNoteEditor(pExisting, false, globalPos);
+        return;
+    }
+    createNoteAt(event->pos(), globalPos);
+}
+
 void WWaveformViewer::mouseMoveEvent(QMouseEvent* event) {
     if (!m_waveformWidget || m_waveformWidget->getType() == WaveformWidgetType::Empty) {
         return;
@@ -157,6 +226,12 @@ void WWaveformViewer::mouseMoveEvent(QMouseEvent* event) {
         v = math_clamp(v, 0.0, 1.0);
         m_pWheel->setParameter(v);
     } else if (!isPlaying()) {
+        // Hint that a standing note's label is clickable to edit it.
+        if (m_waveformWidget->getNoteLabelAtPoint(event->pos())) {
+            setCursor(Qt::PointingHandCursor);
+        } else if (cursor().shape() == Qt::PointingHandCursor) {
+            setCursor(Qt::ArrowCursor);
+        }
         WaveformMarkPointer pMark;
         pMark = m_waveformWidget->getCueMarkAtPoint(event->pos());
         if (pMark && getCuePointerFromCueMark(pMark)) {
@@ -177,7 +252,8 @@ void WWaveformViewer::mouseMoveEvent(QMouseEvent* event) {
     }
 }
 
-void WWaveformViewer::mouseReleaseEvent(QMouseEvent* /*event*/) {
+void WWaveformViewer::mouseReleaseEvent(QMouseEvent* event) {
+    const QPoint pressPos = m_mouseAnchor;
     if (m_bScratching) {
         m_pScratchPositionEnable->set(0.0);
         m_bScratching = false;
@@ -190,6 +266,22 @@ void WWaveformViewer::mouseReleaseEvent(QMouseEvent* /*event*/) {
 
     // Set the cursor back to an arrow.
     setCursor(Qt::ArrowCursor);
+
+    // A right-click without dragging (so the pitch-bend above was a no-op) on the
+    // standing waveform opens the note context menu (concept section 6: create a
+    // note via right-click; existing notes also offer "edit" there).
+    if (event && event->button() == Qt::RightButton && m_waveformWidget &&
+            m_waveformWidget->getType() != WaveformWidgetType::Empty &&
+            !isPlaying() && !m_pHoveredMark && !m_pCueMenuPopup->isVisible() &&
+            (event->pos() - pressPos).manhattanLength() <= 2 &&
+            m_waveformWidget->getTrackInfo() &&
+            m_waveformWidget->getTrackSamples() > 0.0) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        showNoteContextMenu(event->pos(), event->globalPosition().toPoint());
+#else
+        showNoteContextMenu(event->pos(), event->globalPos());
+#endif
+    }
 }
 
 void WWaveformViewer::wheelEvent(QWheelEvent* event) {
@@ -353,4 +445,139 @@ void WWaveformViewer::unhighlightMark(WaveformMarkPointer pMark) {
 
 bool WWaveformViewer::isPlaying() const {
     return m_pPlayEnabled->toBool();
+}
+
+mixxx::audio::FramePos WWaveformViewer::framePosFromMouse(const QPoint& pos) const {
+    if (!m_waveformWidget) {
+        return {};
+    }
+    const double trackSamples = m_waveformWidget->getTrackSamples();
+    if (trackSamples <= 0.0) {
+        return {};
+    }
+    const int eventPosValue = m_waveformWidget->getOrientation() == Qt::Horizontal
+            ? pos.x()
+            : pos.y();
+    // Inverse of WaveformWidgetRenderer::transformSamplePositionInRendererWorld:
+    // pixel -> engine sample position of the displayed waveform.
+    double samplePos = eventPosValue * 2.0 * m_waveformWidget->getAudioSamplePerPixel() +
+            m_waveformWidget->getFirstDisplayedPosition() * trackSamples;
+    samplePos = std::clamp(samplePos, 0.0, trackSamples);
+    auto framePos = mixxx::audio::FramePos::fromEngineSamplePos(samplePos);
+
+    // Snap to the nearest beat when quantize is enabled (concept section 6).
+    if (m_pQuantizeEnabled && m_pQuantizeEnabled->toBool()) {
+        const TrackPointer pTrack = m_waveformWidget->getTrackInfo();
+        if (pTrack) {
+            const mixxx::BeatsPointer pBeats = pTrack->getBeats();
+            if (pBeats) {
+                const auto closest = pBeats->findClosestBeat(framePos);
+                if (closest.isValid()) {
+                    framePos = closest;
+                }
+            }
+        }
+    }
+    return framePos;
+}
+
+void WWaveformViewer::createNoteAt(const QPoint& widgetPos, const QPoint& globalPos) {
+    if (!m_waveformWidget) {
+        return;
+    }
+    const TrackPointer pTrack = m_waveformWidget->getTrackInfo();
+    if (!pTrack) {
+        return;
+    }
+    const mixxx::audio::FramePos position = framePosFromMouse(widgetPos);
+    if (!position.isValid()) {
+        return;
+    }
+    auto pNote = NotePointer(new Note(position, QString(), TrackId()));
+    QList<NotePointer> notes = pTrack->getNotes();
+    notes.append(pNote);
+    pTrack->setNotes(notes);
+    openNoteEditor(pNote, /*isNew=*/true, globalPos);
+}
+
+void WWaveformViewer::openNoteEditor(
+        const NotePointer& pNote, bool isNew, const QPoint& globalPos) {
+    if (!m_waveformWidget || !pNote) {
+        return;
+    }
+    const TrackPointer pTrack = m_waveformWidget->getTrackInfo();
+    if (!pTrack) {
+        return;
+    }
+
+    // Collect the tracks loaded on the *other* decks for the reference dropdown
+    // (concept section 8). Decks without a track are skipped.
+    QList<WNoteMenuPopup::DeckTrackInfo> otherDeckTracks;
+    if (m_pPlayerManager) {
+        const int numDecks = m_pPlayerManager->numberOfDecks();
+        for (int i = 0; i < numDecks; ++i) {
+            const QString group = PlayerManager::groupForDeck(i);
+            if (group == m_group) {
+                continue;
+            }
+            BaseTrackPlayer* pPlayer = m_pPlayerManager->getDeckBase(i);
+            if (!pPlayer) {
+                continue;
+            }
+            const TrackPointer pDeckTrack = pPlayer->getLoadedTrack();
+            if (!pDeckTrack || !pDeckTrack->getId().isValid()) {
+                continue;
+            }
+            QString desc = pDeckTrack->getTitle().trimmed();
+            if (desc.isEmpty()) {
+                desc = tr("(untitled)");
+            }
+            const QString artist = pDeckTrack->getArtist().trimmed();
+            if (!artist.isEmpty()) {
+                desc += QStringLiteral(" - ") + artist;
+            }
+            WNoteMenuPopup::DeckTrackInfo info;
+            info.deckNumber = i + 1;
+            info.trackId = pDeckTrack->getId();
+            info.label = tr("Deck %1: %2").arg(QString::number(i + 1), desc);
+            otherDeckTracks.append(info);
+        }
+    }
+
+    m_pNoteMenuPopup->setNote(pTrack, pNote, isNew, otherDeckTracks);
+    m_pNoteMenuPopup->popup(globalPos);
+}
+
+void WWaveformViewer::showNoteContextMenu(
+        const QPoint& widgetPos, const QPoint& globalPos) {
+    if (!m_waveformWidget) {
+        return;
+    }
+    NotePointer pNote = m_waveformWidget->getNoteLabelAtPoint(widgetPos);
+    QMenu menu(this);
+    if (pNote) {
+        QAction* pEdit = menu.addAction(tr("Edit ETA note"));
+        if (menu.exec(globalPos) == pEdit) {
+            openNoteEditor(pNote, false, globalPos);
+        }
+    } else {
+        QAction* pAdd = menu.addAction(tr("Add ETA note here"));
+        if (menu.exec(globalPos) == pAdd) {
+            createNoteAt(widgetPos, globalPos);
+        }
+    }
+}
+
+void WWaveformViewer::slotRemoveNote(NotePointer pNote) {
+    if (!m_waveformWidget || !pNote) {
+        return;
+    }
+    const TrackPointer pTrack = m_waveformWidget->getTrackInfo();
+    if (!pTrack) {
+        return;
+    }
+    QList<NotePointer> notes = pTrack->getNotes();
+    if (notes.removeAll(pNote) > 0) {
+        pTrack->setNotes(notes);
+    }
 }

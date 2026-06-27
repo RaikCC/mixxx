@@ -1,5 +1,7 @@
 #pragma once
 
+#include "audio/frame.h"
+#include "track/note.h"
 #include "track/track_decl.h"
 #include "util/parented_ptr.h"
 #include "waveform/renderers/waveformmark.h"
@@ -7,8 +9,10 @@
 #include "widget/wwidget.h"
 
 class ControlProxy;
+class PlayerManager;
 class WaveformWidgetAbstract;
 class WCueMenuPopup;
+class WNoteMenuPopup;
 class QDomNode;
 class SkinContext;
 
@@ -18,6 +22,7 @@ class WWaveformViewer : public WWidget, public TrackDropTarget {
     WWaveformViewer(
             const QString& group,
             UserSettingsPointer pConfig,
+            PlayerManager* pPlayerManager = nullptr,
             QWidget* parent = nullptr);
     ~WWaveformViewer() override;
 
@@ -32,6 +37,7 @@ class WWaveformViewer : public WWidget, public TrackDropTarget {
     void dropEvent(QDropEvent *event) override;
 
     void mousePressEvent(QMouseEvent * /*unused*/) override;
+    void mouseDoubleClickEvent(QMouseEvent* /*unused*/) override;
     void mouseMoveEvent(QMouseEvent * /*unused*/) override;
     void mouseReleaseEvent(QMouseEvent * /*unused*/) override;
     void leaveEvent(QEvent* /*unused*/) override;
@@ -56,6 +62,9 @@ class WWaveformViewer : public WWidget, public TrackDropTarget {
 
   private slots:
     void onZoomChange(double zoom);
+    // The note editor asks us to remove a note (user deleted it, or discarded a
+    // new empty one); we rewrite the track's note list.
+    void slotRemoveNote(NotePointer pNote);
 
   private:
     void setWaveformWidget(WaveformWidgetAbstract* waveformWidget);
@@ -81,6 +90,9 @@ class WWaveformViewer : public WWidget, public TrackDropTarget {
     bool m_bBending;
     QPoint m_mouseAnchor;
     parented_ptr<WCueMenuPopup> m_pCueMenuPopup;
+    parented_ptr<WNoteMenuPopup> m_pNoteMenuPopup;
+    PlayerManager* m_pPlayerManager;
+    ControlProxy* m_pQuantizeEnabled;
     WaveformMarkPointer m_pHoveredMark;
 
     WaveformWidgetAbstract* m_waveformWidget;
@@ -93,4 +105,12 @@ class WWaveformViewer : public WWidget, public TrackDropTarget {
     void highlightMark(WaveformMarkPointer pMark);
     void unhighlightMark(WaveformMarkPointer pMark);
     bool isPlaying() const;
+
+    // ETA Notes editing (phase 2c). Maps a mouse position to a track position
+    // (quantized to the nearest beat when the deck's quantize is on), creates a
+    // note there and opens the editor, or opens the editor for an existing note.
+    mixxx::audio::FramePos framePosFromMouse(const QPoint& pos) const;
+    void createNoteAt(const QPoint& widgetPos, const QPoint& globalPos);
+    void openNoteEditor(const NotePointer& pNote, bool isNew, const QPoint& globalPos);
+    void showNoteContextMenu(const QPoint& widgetPos, const QPoint& globalPos);
 };

@@ -28,6 +28,8 @@ class allshader::WaveformWidget final : public ::WGLWidget,
         return m_type;
     }
 
+    NotePointer getNoteLabelAtPoint(QPoint point) const override;
+
     void resizeRenderer(int width, int height, float devicePixelRatio) override;
 
     // override for WaveformWidgetAbstract

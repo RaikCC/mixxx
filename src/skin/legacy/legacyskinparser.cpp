@@ -1087,7 +1087,7 @@ QWidget* LegacySkinParser::parseVisual(const QDomElement& node) {
         return nullptr;
     }
 
-    WWaveformViewer* viewer = new WWaveformViewer(group, m_pConfig, m_pParent);
+    WWaveformViewer* viewer = new WWaveformViewer(group, m_pConfig, m_pPlayerManager, m_pParent);
     viewer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     WaveformWidgetFactory* pFactory = WaveformWidgetFactory::instance();
     pFactory->setWaveformWidget(viewer, node, *m_pContext);

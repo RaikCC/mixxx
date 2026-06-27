@@ -2,6 +2,8 @@
 
 #include <QColor>
 #include <QImage>
+#include <QPointF>
+#include <QRectF>
 #include <QStringList>
 #include <memory>
 #include <vector>
@@ -69,6 +71,12 @@ class allshader::WaveformRenderNotes final
 
     // Called from WaveformWidget::paintGL with a current OpenGL context.
     void update();
+
+    // Hit-testing for the editor (phase 2c): returns the note whose standing-view
+    // label (or marker line) is at `point` (widget logical pixels), or null. Only
+    // valid in the standing view; while playing the labels are hidden and this
+    // returns null. Searched front-to-back so the topmost note wins.
+    NotePointer noteAtPoint(QPointF point) const;
 
   public slots:
     void setColor(const QColor& color) {
@@ -165,6 +173,16 @@ class allshader::WaveformRenderNotes final
     QStringList m_cachedContents;
     float m_cachedDevicePixelRatio{0.f};
     float m_cachedBreadth{0.f};
+
+    // Hit-test geometry for the editor, rebuilt every frame in the standing view
+    // (empty while playing). Each entry pairs a note with its label rectangle and
+    // the x of its marker line, both in widget logical pixels.
+    struct NoteHitBox {
+        NotePointer note;
+        QRectF labelRect;
+        float lineX;
+    };
+    std::vector<NoteHitBox> m_noteHitBoxes;
 
     // One live-ETA bar (background box + content text) per displayed note, plus a
     // matching countdown-digits node, stacked vertically at the play marker. The

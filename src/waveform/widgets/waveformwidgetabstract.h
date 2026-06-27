@@ -1,7 +1,9 @@
 #pragma once
 
+#include <QPoint>
 #include <QString>
 
+#include "track/note.h"
 #include "util/duration.h"
 #include "waveform/renderers/waveformwidgetrenderer.h"
 #include "waveform/widgets/waveformwidgetcategory.h"
@@ -29,6 +31,14 @@ class WaveformWidgetAbstract : public WaveformWidgetRenderer {
 
     virtual WGLWidget* getGLWidget() {
         return nullptr;
+    }
+
+    // ETA Notes editor hit-testing (phase 2c): returns the note whose standing-
+    // view label is at `point` (widget logical pixels), or null. Only the
+    // allshader widget, which actually renders notes, overrides this.
+    virtual NotePointer getNoteLabelAtPoint(QPoint point) const {
+        Q_UNUSED(point);
+        return {};
     }
 
     void hold();

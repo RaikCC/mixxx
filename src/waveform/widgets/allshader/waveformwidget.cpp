@@ -166,6 +166,13 @@ void WaveformWidget::paintGL() {
     m_pEngine->render();
 }
 
+NotePointer WaveformWidget::getNoteLabelAtPoint(QPoint point) const {
+    if (!m_pWaveformRenderNotes) {
+        return {};
+    }
+    return m_pWaveformRenderNotes->noteAtPoint(QPointF(point));
+}
+
 void WaveformWidget::castToQWidget() {
     m_widget = this;
 }

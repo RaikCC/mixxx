@@ -437,6 +437,10 @@ void allshader::WaveformRenderNotes::update() {
     const auto roundToPixel = createFunctionRoundToPixel(devicePixelRatio);
     const bool playing = m_pPlayControl && m_pPlayControl->get() != 0.0;
 
+    // Rebuilt below for the standing view; stays empty while playing (no labels
+    // to click). Used by noteAtPoint() for the editor's hit-testing.
+    m_noteHitBoxes.clear();
+
     // --- marker lines: one vertical rectangle per note (like WaveformRenderBeat).
     // Drawn after the beat grid (see waveformwidget.cpp), so they cover grid lines
     // they sit on. While playing they take the indicator's contrast color (so the
@@ -518,6 +522,9 @@ void allshader::WaveformRenderNotes::update() {
                             ::WaveformRendererAbstract::Play)) +
                     2.f);
             m_labelNodes[i]->setQuad(x, 0.f, devicePixelRatio);
+            const float w = m_labelNodes[i]->textureWidth() / devicePixelRatio;
+            const float h = m_labelNodes[i]->textureHeight() / devicePixelRatio;
+            m_noteHitBoxes.push_back({notes[i], QRectF(x, 0.f, w, h), x - 2.f});
         }
         hideAllEtaNodes();
         return;
@@ -748,6 +755,20 @@ void allshader::WaveformRenderNotes::update() {
     for (int k = shown; k < static_cast<int>(m_etaDigitContrastNodes.size()); ++k) {
         m_etaDigitContrastNodes[k]->clear();
     }
+}
+
+NotePointer allshader::WaveformRenderNotes::noteAtPoint(QPointF point) const {
+    // A little slack around the thin marker line so it is easy to hit, in
+    // addition to the label rectangle itself.
+    constexpr float kLineHitTolerance = 3.f;
+    for (auto it = m_noteHitBoxes.crbegin(); it != m_noteHitBoxes.crend(); ++it) {
+        if (it->labelRect.contains(point) ||
+                std::abs(static_cast<float>(point.x()) - it->lineX) <=
+                        kLineHitTolerance) {
+            return it->note;
+        }
+    }
+    return {};
 }
 
 void allshader::WaveformRenderNotes::computeBeatsAndTime(double playPosition,
