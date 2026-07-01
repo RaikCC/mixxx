@@ -1,0 +1,96 @@
+name: DEB only (Ubuntu 26.04)
+
+# Minimal, manually-dispatched workflow that builds ONLY the Ubuntu .deb on a
+# native ubuntu-26.04 runner (matches Raik's Ubuntu Studio 26.04, so the package
+# links against the same glibc/Qt6/ffmpeg as the target system). Deliberately
+# skips the full build matrix, the checks jobs and the ctest gate for a fast
+# turnaround. Trigger with: gh workflow run deb-only.yml -R RaikCC/mixxx --ref eta-notes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-deb:
+    name: Ubuntu 26.04 DEB
+    runs-on: ubuntu-26.04
+    steps:
+      - name: "Check out repository"
+        uses: actions/checkout@v6
+        with:
+          # Necessary for `git describe` to name the package version.
+          fetch-depth: 0
+
+      - name: "Ensure that all tags are fetched"
+        run: git fetch origin --force --tags
+
+      - name: "Set up build environment"
+        run: tools/debian_buildenv.sh setup
+
+      - name: "Set up GitHub cache for ccache"
+        uses: actions/cache@v5
+        with:
+          path: /home/runner/.cache/ccache
+          key: ubuntu-26.04-qt6-eta-notes-${{ github.run_number }}
+          restore-keys: |
+            ubuntu-26.04-qt6-eta-notes
+            ubuntu-26.04-qt6
+
+      - name: "Set up ccache"
+        run: |
+          ccache --zero-stats
+          ccache --max-size=2G
+
+      - name: "Create build directory"
+        run: mkdir build
+
+      - name: "Configure"
+        working-directory: build
+        # Mirrors the Ubuntu 24.04 matrix entry in build.yml, but with
+        # WARNINGS_FATAL=OFF so a newer gcc on 26.04 cannot fail the build on a
+        # harmless new warning.
+        run: >-
+          cmake
+          -DQT6=ON
+          -DQML=ON
+          -DBULK=ON
+          -DFFMPEG=ON
+          -DLOCALECOMPARE=ON
+          -DMAD=ON
+          -DMODPLUG=ON
+          -DWAVPACK=ON
+          -DINSTALL_USER_UDEV_RULES=OFF
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DWARNINGS_FATAL=OFF
+          -DDEBUG_ASSERTIONS_FATAL=OFF
+          -DBATTERY=ON
+          -DBROADCAST=ON
+          -DDOWNLOAD_MANUAL=ON
+          -DHID=ON
+          -DKEYFINDER=ON
+          -DLILV=ON
+          -DOPUS=ON
+          -DQTKEYCHAIN=ON
+          -DVINYLCONTROL=ON
+          ..
+
+      - name: "Build"
+        working-directory: build
+        run: cmake --build . --config RelWithDebInfo
+        env:
+          CCACHE_NOCOMPRESS: true
+
+      - name: "Print compiler cache stats"
+        run: ccache --show-stats
+
+      - name: "Package DEB"
+        working-directory: build
+        run: cpack -G DEB -V
+
+      - name: "Upload DEB artifact"
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          archive: "false"
+          path: build/*.deb
