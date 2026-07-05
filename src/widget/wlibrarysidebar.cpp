@@ -29,6 +29,14 @@ WLibrarySidebar::WLibrarySidebar(QWidget* parent)
     header()->setStretchLastSection(false);
     header()->setSectionResizeMode(QHeaderView::ResizeToContents);
     header()->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    // With ResizeToContents the column width is computed from the *visible*
+    // rows only, so showing/hiding the horizontal scrollbar changes the very
+    // width that decides whether the scrollbar is needed. At certain widget
+    // sizes this feeds back into an infinite setVisible <-> LayoutRequest
+    // loop that freezes the GUI thread at 100% CPU (observed with Qt 6.10).
+    // Disabling the horizontal scrollbar breaks the feedback loop; horizontal
+    // scrolling via keyboard navigation and touchpad still works.
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 }
 
 void WLibrarySidebar::contextMenuEvent(QContextMenuEvent* pEvent) {
