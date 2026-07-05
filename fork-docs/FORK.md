@@ -65,13 +65,26 @@ Offen: QML-Waveform-Pfad (Abschnitt 9 unten) und Rebase auf 2.6.0 stable.
 | `src/library/scanner/libraryscanner.cpp` | **eigene** DAO-Instanzen — eigener `NotesDAO`, inkl. `initialize()` |
 | `src/waveform/widgets/allshader/waveformwidget.cpp` | Renderer eingehängt (zwischen Beat und Mark); ruft `update()` aus `paintGL()` |
 | `src/waveform/renderers/allshader/digitsrenderer.{h,cpp}` | erweitert: `measure()`, `updateClipped()` (Glyph-genaues Clipping), parametrisiertes `updateTexture()` (Farbe/Outline/Font; Defaults = alter Look, `waveformrendermark` unberührt) |
-| `src/waveform/waveformwidgetfactory.{h,cpp}` | alle ETA-Settings (Member + Getter/Setter, Config-Gruppe `[EtaNotes]`) |
+| `src/waveform/waveformwidgetfactory.{h,cpp}` | alle ETA-Settings (Member + Getter/Setter, Config-Gruppe `[EtaNotes]`); **zusätzlich** in `getSurfaceFormat()` `format.setSamples(4)` — 4x MSAA gegen Waveform-Kanten-Flimmern (Standalone-Fix, s.u.) |
 | `src/widget/wwaveformviewer.{h,cpp}` | Maus-Gesten (Doppelklick anlegen, Rechtsklick Menü, Klick/Drag auf Label), Pixel→Sample-Mapping, ctor-Param `PlayerManager*` |
 | `src/skin/legacy/legacyskinparser.cpp` | reicht `PlayerManager*` an `WWaveformViewer` durch |
 | `src/preferences/dialog/dlgpreferences.cpp` | ETA-Notes-Seite als letzte Pref-Seite (nach „Modplug Decoder") |
 | `res/mixxx.qrc` | Icon registriert (Pref-Icons kommen aus Qt-Resources, nicht Dateisystem) |
 | `CMakeLists.txt` | neue `.cpp`s im `mixxx-lib`-Block; **WSL-Guard** deaktiviert (dev-only, s.u.) |
 | `.github/workflows/build.yml` | `StemControlTest` auf beiden Windows-Matrix-Einträgen ausgeschlossen (Runner-Artefakt: ALAC-Stem-Load-Timeout → SegFault; ARM64 bestand identischen Code) |
+| `src/widget/wlibrarysidebar.cpp` | ctor: `setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff)` — bricht eine Endlos-Relayout-Schleife (Standalone-Fix, s.u.) |
+
+### Standalone-Fixes (nicht Teil des ETA-Notes-Features)
+
+Zwei Fixes für **latente Upstream-Bugs**, unabhängig vom Feature — je ein isoliertes
+Commit, saubere Kandidaten für einen Upstream-PR. Nicht in `upstream/main` oder
+`upstream/2.6` enthalten (geprüft 2026-07-05), lösen sich also beim 2.6.0-Rebase
+**nicht** von selbst — nach dem Rebase erneut anwenden (trivialer Cherry-Pick).
+
+| Fix | Datei | Kern | Warum |
+|---|---|---|---|
+| Relayout-Hang | `src/widget/wlibrarysidebar.cpp` | H-Scrollbar der Sidebar deaktiviert | `QHeaderView::ResizeToContents` macht die Spaltenbreite von den sichtbaren Zeilen abhängig; Ein-/Ausblenden der H-Scrollbar ändert die Viewporthöhe → sichtbare Zeilen → Breite → Scrollbar-Bedarf. Bei bestimmten Größen endlose `setVisible ⇄ postEvent(LayoutRequest)`-Schleife (100 % CPU, Freeze/SIGABRT). Alle drei bekannten Trigger (Waveform-Grip-Drag, degeneriertes `stackedWaveforms_splitSize` beim Start, Panel-Toggle zur Laufzeit) münden hier. Live im hängenden Prozess per gdb bewiesen. |
+| Waveform-Flimmern | `src/waveform/waveformwidgetfactory.cpp` | 4x MSAA auf der Waveform-GL-Fläche (`getSurfaceFormat`) | Ohne Multisampling haben die 1–2 px schmalen, hart-kantigen Waveform-Zacken keine partielle Pixel-Deckung; beim Sub-Pixel-Scrollen kippen sie zwischen 1- und 2-Pixel-Deckung → sichtbares Kanten-Flimmern (unabhängig vom PLL-VSync-Timing). Der allshader-Renderer zeichnet in den Default-Framebuffer des Fensters, MSAA wird beim Swap aufgelöst. Betrifft nur den Legacy-Skin-Pfad; der QML-UI-Pfad hat separat MSAA (Issue #12536). |
 
 ### Dev-only (nicht feature-relevant)
 
