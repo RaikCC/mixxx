@@ -1400,6 +1400,17 @@ QSurfaceFormat WaveformWidgetFactory::getSurfaceFormat(UserSettingsPointer pConf
             : VSyncThread::ST_DEFAULT;
 
     QSurfaceFormat format;
+    // Enable 4x multisample anti-aliasing for the waveform surface. The signal
+    // renderers draw the waveform as hard-edged geometry; without MSAA the thin
+    // (1-2 px) vertical features have no partial pixel coverage, so while the
+    // waveform scrolls sub-pixel they flip between covering one and two pixels
+    // frame to frame, which reads as shimmering. Upstream never sets samples on
+    // this surface (only the controller-screen and QML-UI paths use MSAA), so
+    // legacy-skin waveforms shimmer. The allshader renderer draws straight into
+    // the window's default framebuffer, so a multisampled format resolves on
+    // swap and smooths those edges. 4 samples is the quality/perf sweet spot and
+    // is cheap even on older iGPUs (Intel HD 4400) for this small surface.
+    format.setSamples(4);
     // Qt5 requires at least OpenGL 2.1 or OpenGL ES 2.0, default is 2.0
     // format.setVersion(2, 1);
     // Core and Compatibility contexts have been introduced in openGL 3.2
