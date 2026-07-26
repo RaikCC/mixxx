@@ -21,6 +21,11 @@ RubberBandWorkerPool::RubberBandWorkerPool(UserSettingsPointer pConfig)
 
     qDebug() << "RubberBand will use" << numRBTasks << "tasks to scale the audio signal";
 
+    // QThreadPool names its threads after the pool's objectName. QThread also
+    // applies it as the OS thread name, so the workers are identifiable in
+    // ps/htop and RubberBandTask::run() can recognize them (see
+    // kRubberBandWorkerThreadName).
+    setObjectName(kRubberBandWorkerThreadName);
     setThreadPriority(QThread::HighPriority);
     // The RB pool will only be used to scale n-1 buffer sample, so the engine
     // thread takes care of the last buffer and doesn't have to be idle.

@@ -6,6 +6,11 @@
 #include "preferences/usersettings.h"
 #include "util/singleton.h"
 
+// Object (and OS) name of the pool's worker threads. RubberBandTask uses it
+// to distinguish genuine pool workers from the engine callback thread, which
+// runs tasks inline when the pool is exhausted.
+inline constexpr QLatin1StringView kRubberBandWorkerThreadName("RBWorker");
+
 // RubberBandWorkerPool is a global pool manager for RubberBandWorkerPool. It
 // allows a the Engine thread to use a pool of agnostic RubberBandWorker which
 // can be distributed stretching job
