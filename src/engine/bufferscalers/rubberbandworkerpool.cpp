@@ -26,11 +26,10 @@ RubberBandWorkerPool::RubberBandWorkerPool(UserSettingsPointer pConfig)
     // thread takes care of the last buffer and doesn't have to be idle.
     setMaxThreadCount(numRBTasks - 1);
 
-    // We allocate one runner less than the total of maximum supported channel,
-    // so the engine thread will also perform a stretching operation, instead of
-    // waiting all workers to complete. During performance testing, this ahas
-    // show better results
-    for (int w = 0; w < maxThreadCount(); w++) {
-        reserveThread();
-    }
+    // Note: no reserveThread() calls here! QThreadPool counts reserved slots
+    // towards activeThreadCount(), so reserving maxThreadCount() slots up
+    // front caps the pool at a single concurrently running worker (only the
+    // recycled waiting thread passes the areAllThreadsActive() check in
+    // QThreadPoolPrivate::tryStart()). All other stretch tasks then silently
+    // fall back to running serially in the engine thread.
 }
