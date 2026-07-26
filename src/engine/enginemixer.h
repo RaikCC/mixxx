@@ -1,6 +1,9 @@
 #pragma once
 
 #include <QObject>
+#include <QRunnable>
+#include <QSemaphore>
+#include <QThreadPool>
 #include <QVarLengthArray>
 #include <atomic>
 #include <gsl/pointers>
@@ -35,6 +38,12 @@ class EngineDelay;
 // The number of channels to pre-allocate in various structures in the
 // engine. Prevents memory allocation in EngineMixer::addChannel.
 static constexpr int kPreallocatedChannels = 64;
+
+// Object (and OS) name of the parallel deck processing worker threads. The
+// promotion to a real-time scheduling policy in ChannelProcessTask::run()
+// uses it to recognize genuine pool workers (see rubberbandworkerpool.h for
+// the same pattern used by the keylock stretch workers).
+inline constexpr QLatin1StringView kDeckWorkerThreadName("DeckWorker");
 
 class EngineMixer : public QObject, public AudioSource {
     Q_OBJECT
@@ -114,6 +123,8 @@ class EngineMixer : public QObject, public AudioSource {
 
     CSAMPLE_GAIN getMainGain(int channelIndex) const;
 
+    class ChannelProcessTask;
+
     struct ChannelInfo {
         ChannelInfo(int index)
                 : m_index(index) {
@@ -125,6 +136,40 @@ class EngineMixer : public QObject, public AudioSource {
         std::unique_ptr<ControlPushButton> m_pMuteControl{nullptr};
         GroupFeatureState m_features{};
         int m_index;
+        // Reusable worker task for parallel deck processing, created in
+        // addChannel(). Defined below this struct.
+        std::unique_ptr<ChannelProcessTask> m_pProcessTask{nullptr};
+    };
+
+    /// Runs one channel's process() plus feature collection, either on a
+    /// DeckWorker pool thread or inline on the engine thread (parallel deck
+    /// processing, see processChannels()). One instance per ChannelInfo,
+    /// reused every callback; never auto-deleted.
+    class ChannelProcessTask : public QRunnable {
+      public:
+        ChannelProcessTask(ChannelInfo* pInfo,
+                EngineEffectsManager* pEngineEffectsManager)
+                : m_pInfo(pInfo),
+                  m_pEngineEffectsManager(pEngineEffectsManager) {
+            setAutoDelete(false);
+        }
+        /// Set the buffer size for the upcoming run(). Only call while the
+        /// task is not running.
+        void set(std::size_t bufferSize) {
+            m_bufferSize = bufferSize;
+        }
+        void run() override;
+        /// Wait for run() to finish. Also called for tasks that ran inline,
+        /// which resets the semaphore (same pattern as RubberBandTask).
+        void waitReady() {
+            m_done.acquire();
+        }
+
+      private:
+        ChannelInfo* const m_pInfo;
+        EngineEffectsManager* const m_pEngineEffectsManager;
+        std::size_t m_bufferSize = 0;
+        QSemaphore m_done;
     };
 
     struct GainCache {
@@ -297,6 +342,14 @@ class EngineMixer : public QObject, public AudioSource {
 
     parented_ptr<EngineWorkerScheduler> m_pWorkerScheduler;
     std::unique_ptr<EngineSync> m_pEngineSync;
+
+    // Parallel deck processing: pool of DeckWorker threads that process
+    // channels concurrently with the engine thread (see processChannels()).
+    // Declared after m_channels so it is destroyed (and drained) first.
+    QThreadPool m_deckWorkerPool;
+    // [App]parallel_decks, read once at startup. When false, channels are
+    // processed serially like upstream.
+    bool m_parallelDecks;
 
     std::unique_ptr<ControlObject> m_pMainGain;
     std::unique_ptr<ControlObject> m_pBoothGain;

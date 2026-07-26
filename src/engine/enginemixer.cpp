@@ -1,5 +1,14 @@
 #include "engine/enginemixer.h"
 
+#ifdef Q_OS_LINUX
+#include <pthread.h>
+#include <sched.h>
+#include <sys/resource.h>
+
+#include <cstring>
+#endif
+
+#include <QtDebug>
 #include <memory>
 
 #include "audio/types.h"
@@ -34,7 +43,71 @@ const QString kLegacyGroup = QStringLiteral("[Master]");
 const QString kMainGroup = QStringLiteral("[Main]");
 
 const ConfigKey kInternalClockBpmKey{QStringLiteral("[InternalClock]"), QStringLiteral("bpm")};
+
+#ifdef Q_OS_LINUX
+// Same rationale as for the RubberBand stretch workers (rubberbandtask.cpp):
+// QThread priorities are a no-op under Linux' default SCHED_OTHER policy, but
+// the real-time engine callback blocks in waitReady() until all channel
+// tasks have finished - a worker preempted by ordinary desktop load would
+// delay the callback past its deadline. Promote each DeckWorker to
+// SCHED_FIFO once: below the audio callback (PipeWire data-loop: 83), above
+// the RubberBand stretch workers (78) whose results the channel tasks wait
+// for in turn.
+constexpr int kDeckWorkerRtPriority = 80;
+
+void promoteDeckWorkerToRtPriorityOnce() {
+    thread_local bool s_attempted = false;
+    if (s_attempted) {
+        return;
+    }
+    s_attempted = true;
+
+    // Tasks may also run inline on the engine callback thread (or, in tests,
+    // on arbitrary threads) - promote genuine pool workers only.
+    if (QThread::currentThread()->objectName() != kDeckWorkerThreadName) {
+        return;
+    }
+
+    int prio = kDeckWorkerRtPriority;
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_RTPRIO, &limit) == 0 &&
+            static_cast<int>(limit.rlim_cur) < prio) {
+        prio = static_cast<int>(limit.rlim_cur);
+    }
+    if (prio <= 0) {
+        qWarning() << "EngineMixer: real-time scheduling not permitted"
+                   << "(RLIMIT_RTPRIO is 0), deck workers stay best-effort";
+        return;
+    }
+
+    sched_param param{};
+    param.sched_priority = prio;
+    if (int err = pthread_setschedparam(pthread_self(), SCHED_FIFO, &param)) {
+        qWarning() << "EngineMixer: pthread_setschedparam failed:"
+                   << strerror(err);
+    } else {
+        qDebug() << "EngineMixer: deck worker promoted to SCHED_FIFO" << prio;
+    }
+}
+#endif
 } // namespace
+
+void EngineMixer::ChannelProcessTask::run() {
+#ifdef Q_OS_LINUX
+    promoteDeckWorkerToRtPriorityOnce();
+#endif
+    auto& pChannel = m_pInfo->m_pChannel;
+    DEBUG_ASSERT(m_pInfo->m_pBuffer.size() >= static_cast<SINT>(m_bufferSize));
+    pChannel->process(m_pInfo->m_pBuffer.data(), m_bufferSize);
+
+    // Collect metadata for effects
+    if (m_pEngineEffectsManager) {
+        GroupFeatureState features;
+        pChannel->collectFeatures(&features);
+        m_pInfo->m_features = features;
+    }
+    m_done.release();
+}
 
 EngineMixer::EngineMixer(UserSettingsPointer pConfig,
         const QString& group,
@@ -163,6 +236,27 @@ EngineMixer::EngineMixer(UserSettingsPointer pConfig,
     m_bBusOutputConnected[EngineChannel::RIGHT] = false;
     m_bExternalRecordBroadcastInputConnected = false;
     m_pWorkerScheduler->start(QThread::HighPriority);
+
+    // Parallel deck processing (see processChannels()). The pool threads are
+    // named DeckWorker (the objectName becomes the OS thread name) and get
+    // promoted to a real-time scheduling policy on their first task. They
+    // never expire: re-creating a thread costs a pthread_create in the
+    // callback and would drop the real-time promotion.
+    m_parallelDecks = !pConfig ||
+            pConfig->getValue(ConfigKey(QStringLiteral("[App]"),
+                                      QStringLiteral("parallel_decks")),
+                    true);
+    m_deckWorkerPool.setObjectName(kDeckWorkerThreadName);
+    m_deckWorkerPool.setThreadPriority(QThread::HighPriority);
+    m_deckWorkerPool.setExpiryTimeout(-1);
+    // The engine thread processes one channel itself instead of idling, so
+    // n-1 workers suffice for the usual 4 decks; additional simultaneously
+    // active channels (samplers, mic, aux) simply run inline on the engine
+    // thread when no worker is free.
+    m_deckWorkerPool.setMaxThreadCount(3);
+    qDebug() << "Parallel deck processing"
+             << (m_parallelDecks ? "enabled" : "disabled") << "with"
+             << m_deckWorkerPool.maxThreadCount() << "workers";
 
     m_pSampleRate->addAlias(ConfigKey(group, QStringLiteral("samplerate")));
     m_pSampleRate->set(44100.);
@@ -319,17 +413,45 @@ void EngineMixer::processChannels(std::size_t bufferSize) {
     }
 
     // Now that the list is built and ordered, do the processing.
-    for (int i = activeChannelsStartIndex; i < m_activeChannels.size(); ++i) {
-        ChannelInfo* pChannelInfo = m_activeChannels[i];
-        auto& pChannel = pChannelInfo->m_pChannel;
-        DEBUG_ASSERT(pChannelInfo->m_pBuffer.size() >= static_cast<SINT>(bufferSize));
-        pChannel->process(pChannelInfo->m_pBuffer.data(), bufferSize);
+    const int activeChannelCount = m_activeChannels.size() - activeChannelsStartIndex;
+    if (m_parallelDecks && activeChannelCount > 1 &&
+            !m_pEngineSync->syncDeckExists()) {
+        // Parallel deck processing: distribute the per-channel work (sample
+        // reads, keylock stretching, per-deck effects) over the DeckWorker
+        // pool and this thread, then wait for all channels before mixing.
+        // The callback cost becomes the maximum over the channels instead of
+        // their sum. Not entered while sync lock couples decks: their
+        // processing order matters there (leader first), and the sync code
+        // was never written for concurrently processed decks.
+        for (int i = activeChannelsStartIndex; i < m_activeChannels.size(); ++i) {
+            ChannelProcessTask* pTask = m_activeChannels[i]->m_pProcessTask.get();
+            pTask->set(bufferSize);
+            // The last channel always runs on this thread, which would
+            // otherwise idle in waitReady(); the others go to the pool as
+            // long as workers are free.
+            if (i == m_activeChannels.size() - 1 ||
+                    !m_deckWorkerPool.tryStart(pTask)) {
+                pTask->run();
+            }
+        }
+        // Wait for all channels; for tasks that ran on this thread the
+        // acquire simply resets the semaphore.
+        for (int i = activeChannelsStartIndex; i < m_activeChannels.size(); ++i) {
+            m_activeChannels[i]->m_pProcessTask->waitReady();
+        }
+    } else {
+        for (int i = activeChannelsStartIndex; i < m_activeChannels.size(); ++i) {
+            ChannelInfo* pChannelInfo = m_activeChannels[i];
+            auto& pChannel = pChannelInfo->m_pChannel;
+            DEBUG_ASSERT(pChannelInfo->m_pBuffer.size() >= static_cast<SINT>(bufferSize));
+            pChannel->process(pChannelInfo->m_pBuffer.data(), bufferSize);
 
-        // Collect metadata for effects
-        if (m_pEngineEffectsManager) {
-            GroupFeatureState features;
-            pChannel->collectFeatures(&features);
-            pChannelInfo->m_features = features;
+            // Collect metadata for effects
+            if (m_pEngineEffectsManager) {
+                GroupFeatureState features;
+                pChannel->collectFeatures(&features);
+                pChannelInfo->m_features = features;
+            }
         }
     }
     // Do internal sync lock post-processing before the other
@@ -860,6 +982,8 @@ void EngineMixer::addChannel(std::unique_ptr<EngineChannel> pChannel) {
     pChannelInfo->m_pMuteControl->setButtonMode(mixxx::control::ButtonMode::PowerWindow);
     pChannelInfo->m_pBuffer = mixxx::SampleBuffer(kMaxEngineSamples);
     pChannelInfo->m_pBuffer.clear();
+    pChannelInfo->m_pProcessTask = std::make_unique<ChannelProcessTask>(
+            pChannelInfo.get(), m_pEngineEffectsManager);
     EngineBuffer* pBuffer = pChannelInfo->m_pChannel->getEngineBuffer();
     m_channels.append(std::move(pChannelInfo));
     constexpr GainCache gainCacheDefault = {0, false};

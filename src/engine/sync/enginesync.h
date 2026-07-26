@@ -74,6 +74,11 @@ class EngineSync : public SyncableListener {
     void onCallbackStart(mixxx::audio::SampleRate sampleRate, std::size_t bufferSize);
     void onCallbackEnd(mixxx::audio::SampleRate sampleRate, std::size_t bufferSize);
 
+    /// This utility method returns true if it finds a deck not in SyncMode::None.
+    /// Public so EngineMixer can fall back to serial channel processing while
+    /// sync lock couples decks (see EngineMixer::processChannels).
+    bool syncDeckExists() const;
+
   private:
     /// Iterate over decks, and based on sync and play status, pick a new Leader, or return the
     /// explicit leader if the one has been selected. If triggering_syncable is not null, we treat
@@ -99,9 +104,6 @@ class EngineSync : public SyncableListener {
 
     /// Unsets all sync state on a Syncable.
     void deactivateSync(Syncable* pSyncable);
-
-    /// This utility method returns true if it finds a deck not in SyncMode::None.
-    bool syncDeckExists() const;
 
     /// Return the current BPM of the Leader Syncable. If no Leader syncable is
     /// set then returns the BPM of the internal clock.
