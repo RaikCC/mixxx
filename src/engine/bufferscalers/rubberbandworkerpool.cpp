@@ -17,9 +17,19 @@ RubberBandWorkerPool::RubberBandWorkerPool(UserSettingsPointer pConfig)
     DEBUG_ASSERT(mixxx::kMaxEngineChannelInputCount % m_channelPerWorker == 0);
 
     int numCore = QThread::idealThreadCount();
-    int numRBTasks = qMin(numCore, mixxx::kMaxEngineChannelInputCount / m_channelPerWorker);
+    int numRBTasksPerDeck = mixxx::kMaxEngineChannelInputCount / m_channelPerWorker;
 
-    qDebug() << "RubberBand will use" << numRBTasks << "tasks to scale the audio signal";
+    // With parallel deck processing (see EngineMixer::processChannels), two
+    // STEM decks stretch concurrently. Each deck runs one of its tasks
+    // inline in the thread that processes the deck, so it needs n-1 pool
+    // workers - size the pool so two decks don't contend for workers, capped
+    // to leave hardware threads for the engine callback and the deck
+    // workers.
+    int numWorkers = qBound(1, 2 * (numRBTasksPerDeck - 1), numCore - 2);
+
+    qDebug() << "RubberBand will use" << numRBTasksPerDeck
+             << "tasks per deck to scale the audio signal, with"
+             << numWorkers << "pool workers";
 
     // QThreadPool names its threads after the pool's objectName. QThread also
     // applies it as the OS thread name, so the workers are identifiable in
@@ -27,9 +37,7 @@ RubberBandWorkerPool::RubberBandWorkerPool(UserSettingsPointer pConfig)
     // kRubberBandWorkerThreadName).
     setObjectName(kRubberBandWorkerThreadName);
     setThreadPriority(QThread::HighPriority);
-    // The RB pool will only be used to scale n-1 buffer sample, so the engine
-    // thread takes care of the last buffer and doesn't have to be idle.
-    setMaxThreadCount(numRBTasks - 1);
+    setMaxThreadCount(numWorkers);
 
     // Note: no reserveThread() calls here! QThreadPool counts reserved slots
     // towards activeThreadCount(), so reserving maxThreadCount() slots up
