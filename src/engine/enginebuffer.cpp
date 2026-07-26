@@ -988,6 +988,7 @@ void EngineBuffer::processTrackLocked(
         }
     }
 
+    bool scalerClearDeferred = false;
     if (speed != 0.0 || is_scratching) {
         // Do not switch scaler when we have no transport, except when we start scratching.
         enableIndependentPitchTempoScaling(useIndependentPitchAndTempoScaling,
@@ -995,8 +996,11 @@ void EngineBuffer::processTrackLocked(
     } else if (m_speed_old != 0) {
         // we are stopping, collect samples for fade out
         readToCrossfadeBuffer(bufferSize);
-        // Clear the scaler information
-        m_pScale->clear();
+        // Clear the scaler information - but only after the parameter update
+        // below: clearAsync() hands the expensive stretcher re-priming to a
+        // worker thread, and setScaleParameters() would otherwise block on
+        // that very worker right away.
+        scalerClearDeferred = true;
     }
 
     // How speed/tempo/pitch are related:
@@ -1088,6 +1092,15 @@ void EngineBuffer::processTrackLocked(
         // Scaler did not need updating. By definition this means we are at
         // our old rate.
         rate = m_rate_old;
+    }
+
+    if (scalerClearDeferred) {
+        // The deck just stopped rolling. The scaler parameters are up to date
+        // now, so the expensive stretcher re-priming may happen on a worker
+        // thread instead of blocking the engine callback - and the next play
+        // start finds the stretcher already primed (see
+        // EngineBufferScaleRubberBand::clearAsync).
+        m_pScale->clearAsync();
     }
 
     const mixxx::audio::FramePos playpos_old = m_playPos;

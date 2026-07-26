@@ -2,7 +2,10 @@
 
 #include <rubberband/RubberBandStretcher.h>
 
+#include <QRunnable>
+#include <QSemaphore>
 #include <array>
+#include <atomic>
 #include <memory>
 
 #include "engine/bufferscalers/enginebufferscale.h"
@@ -17,6 +20,9 @@ class EngineBufferScaleRubberBand final : public EngineBufferScale {
   public:
     explicit EngineBufferScaleRubberBand(
             ReadAheadManager* pReadAheadManager);
+    /// Waits for a prime deferred by clearAsync() that may still run on a
+    /// worker thread before the object goes away.
+    ~EngineBufferScaleRubberBand() override;
 
     EngineBufferScaleRubberBand(const EngineBufferScaleRubberBand&) = delete;
     EngineBufferScaleRubberBand& operator=(const EngineBufferScaleRubberBand&) = delete;
@@ -40,6 +46,13 @@ class EngineBufferScaleRubberBand final : public EngineBufferScale {
 
     // Flush buffer.
     void clear() override;
+    // Like clear(), but defers the expensive stretcher re-priming (reset plus
+    // feeding the silence start pad, ~10ms for a STEM deck) to a worker
+    // thread. Called by the engine when a deck stops rolling, so neither the
+    // stop nor the next play start pays for the re-priming inside the
+    // real-time callback. The next access to the stretcher synchronizes with
+    // the deferred work via ensurePrimed().
+    void clearAsync() override;
 
   private:
     // Reset RubberBand library with new audio signal
@@ -85,4 +98,37 @@ class EngineBufferScaleRubberBand final : public EngineBufferScale {
     SINT m_remainingPaddingInOutput = 0;
 
     bool m_useEngineFiner;
+
+    /// State of the deferred priming started by clearAsync().
+    enum class PrimeState : int {
+        Primed,   ///< the stretcher is ready to be used by the engine thread
+        InFlight, ///< a worker thread owns the stretcher and runs reset()
+    };
+
+    /// Trampoline that lets a QThreadPool worker run runDeferredPrime().
+    /// Reused for every prime; never auto-deleted.
+    class PrimeTask : public QRunnable {
+      public:
+        explicit PrimeTask(EngineBufferScaleRubberBand* pScaler)
+                : m_pScaler(pScaler) {
+            setAutoDelete(false);
+        }
+        void run() override {
+            m_pScaler->runDeferredPrime();
+        }
+
+      private:
+        EngineBufferScaleRubberBand* const m_pScaler;
+    };
+
+    void runDeferredPrime();
+    /// Synchronize with a prime deferred by clearAsync(). Must be called
+    /// before any other access to m_rubberBand or the scratch buffers. All
+    /// callers run on the engine thread, or on a thread that holds the
+    /// engine's pause lock - never concurrently.
+    void ensurePrimed();
+
+    std::atomic<PrimeState> m_primeState;
+    QSemaphore m_primeDone;
+    PrimeTask m_primeTask;
 };

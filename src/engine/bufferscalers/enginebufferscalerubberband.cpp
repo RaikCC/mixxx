@@ -1,6 +1,7 @@
 #include "engine/bufferscalers/enginebufferscalerubberband.h"
 
 #include <QFile>
+#include <QThreadPool>
 #include <QtDebug>
 
 #include "engine/readaheadmanager.h"
@@ -24,15 +25,77 @@ EngineBufferScaleRubberBand::EngineBufferScaleRubberBand(
           m_bufferPtrs(),
           m_interleavedReadBuffer(MAX_BUFFER_LEN),
           m_bBackwards(false),
-          m_useEngineFiner(false) {
+          m_useEngineFiner(false),
+          m_primeState(PrimeState::Primed),
+          m_primeTask(this) {
     // Initialize the internal buffers to prevent re-allocations
     // in the real-time thread.
     onSignalChanged();
 }
 
+EngineBufferScaleRubberBand::~EngineBufferScaleRubberBand() {
+    // Make sure no worker thread is still priming the stretcher. After this
+    // returns, runDeferredPrime() has completed (the completion token is
+    // released as its very last action) and QThreadPool does not touch
+    // m_primeTask after run() returns.
+    ensurePrimed();
+}
+
+void EngineBufferScaleRubberBand::clearAsync() {
+    VERIFY_OR_DEBUG_ASSERT(m_rubberBand.isValid()) {
+        return;
+    }
+    // Discard the completion token of an earlier prime that finished without
+    // a waiter, so a later ensurePrimed() cannot consume a stale token while
+    // a newer prime is still running. All consumers of m_primeDone run on the
+    // engine thread or hold the engine's pause lock, never concurrently.
+    while (m_primeDone.tryAcquire()) {
+    }
+    PrimeState expected = PrimeState::Primed;
+    if (!m_primeState.compare_exchange_strong(expected, PrimeState::InFlight)) {
+        // A prime is already in flight; its result is exactly what we want.
+        return;
+    }
+    // Use the global pool instead of the RubberBandWorkerPool: its threads
+    // are not real-time, so priming the stopping deck never competes with the
+    // real-time stretch workers of a deck that is still playing. There is no
+    // deadline here - the deck is stopped.
+    if (!QThreadPool::globalInstance()->tryStart(&m_primeTask)) {
+        // No idle worker available right now. Fall back to the old
+        // synchronous behavior instead of queueing, which could defer the
+        // prime arbitrarily long.
+        m_primeState.store(PrimeState::Primed, std::memory_order_relaxed);
+        reset();
+    }
+}
+
+void EngineBufferScaleRubberBand::runDeferredPrime() {
+    reset();
+    m_primeState.store(PrimeState::Primed, std::memory_order_release);
+    // Wake a potentially waiting engine thread. This must be the last access
+    // to this object: once the token is released, the engine thread (or the
+    // destructor) may proceed immediately.
+    m_primeDone.release();
+}
+
+void EngineBufferScaleRubberBand::ensurePrimed() {
+    if (m_primeState.load(std::memory_order_acquire) == PrimeState::Primed) {
+        return;
+    }
+    // A worker is priming the stretcher right now. This only happens when the
+    // deck is restarted within a few milliseconds of stopping (or on
+    // shutdown/reconfiguration) - the price is the same reset that used to
+    // run synchronously in the callback anyway.
+    m_primeDone.acquire();
+    DEBUG_ASSERT(m_primeState.load(std::memory_order_acquire) == PrimeState::Primed);
+}
+
 void EngineBufferScaleRubberBand::setScaleParameters(double base_rate,
                                                      double* pTempoRatio,
                                                      double* pPitchRatio) {
+    // A prime deferred by clearAsync() may still be running on the stretcher.
+    ensurePrimed();
+
     // Negative speed means we are going backwards. pitch does not affect
     // the playback direction.
     m_bBackwards = *pTempoRatio < 0;
@@ -102,6 +165,10 @@ void EngineBufferScaleRubberBand::onSignalChanged() {
         return;
     }
 
+    // A prime deferred by clearAsync() may still be running on the old
+    // buffers and stretcher instances - wait for it before reconfiguring.
+    ensurePrimed();
+
     // We only upscale the memory allocation to reduce the likelihood of
     // impacting the real-time thread. This way, on first load of a STEM (8
     // channels), we reallocate the right size and keep it allocated till the
@@ -152,6 +219,7 @@ void EngineBufferScaleRubberBand::clear() {
     VERIFY_OR_DEBUG_ASSERT(m_rubberBand.isValid()) {
         return;
     }
+    ensurePrimed();
     reset();
 }
 
@@ -300,6 +368,9 @@ double EngineBufferScaleRubberBand::scaleBuffer(
         // unscaled input buffer!
         return 0.0;
     }
+
+    // A prime deferred by clearAsync() may still be running on the stretcher.
+    ensurePrimed();
 
     double readFramesProcessed = 0;
     SINT remaining_frames = getOutputSignal().samples2frames(iOutputBufferSize);

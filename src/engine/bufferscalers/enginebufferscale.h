@@ -53,6 +53,13 @@ class EngineBufferScale : public QObject {
 
     // Called from EngineBuffer when seeking, to ensure the buffers are flushed */
     virtual void clear() = 0;
+    // Like clear(), but implementations may defer expensive re-initialization
+    // work to a worker thread. Only suitable when the deck is not rolling
+    // (e.g. when it just stopped): the scaler is not guaranteed to be usable
+    // until the next call into it, which synchronizes with the deferred work.
+    virtual void clearAsync() {
+        clear();
+    }
     // Scale buffer
     // Returns the number of frames that have bean read from the unscaled
     // input buffer The number of frames copied to the output buffer is always
