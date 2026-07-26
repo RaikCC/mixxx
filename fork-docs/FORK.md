@@ -90,6 +90,31 @@ Rebase erneut anwenden (trivialer Cherry-Pick).
 | Keylock-Worker ohne RT-Prio | `src/engine/bufferscalers/rubberbandtask.cpp`, `rubberbandworkerpool.{h,cpp}` | Pool-Threads heißen `RBWorker` und heben sich beim ersten Task auf SCHED_FIFO 78 (unter dem Audio-Callback, geclampt auf `RLIMIT_RTPRIO`) | `QThread::HighPriority` ist auf Linux unter SCHED_OTHER wirkungslos → der RT-Callback wartet in `RubberBandWrapper::process()` an der Semaphore auf verdrängbare Worker = Prioritätsinversion = sporadische Skips, v. a. bei Stems + Keylock (R3 läuft bei Keylock **immer**, auch bei 0.00 %). Engine-Thread (Inline-Tasks) wird per objectName-Guard nicht angefasst. Live-Diagnose 2026-07-26 auf dem G9: Mixxx-Node `ERR=3`, genau ein Pool-Worker als `TS` neben `data-loop.0` `FF 83`. |
 | Stretcher-Priming im Callback | `src/engine/bufferscalers/enginebufferscale.h`, `enginebufferscalerubberband.{h,cpp}`, `src/engine/enginebuffer.cpp` | `clearAsync()`: beim Deck-Stopp läuft Reset+Start-Padding des R3-Stretchers (~10 ms bei Stems) auf einem `QThreadPool::globalInstance()`-Worker statt im RT-Callback; Zustandsmaschine `Primed/InFlight` + Semaphore, jeder andere Stretcher-Zugriff synchronisiert via `ensurePrimed()` | Jeder Stopp riss die Callback-Frist (gemessen: `RubberBand::process` bis 11 ms allein fürs Pad); der nächste Start findet den Stretcher fertig vorgewärmt. In-Play-Pfade (Seeks, Richtungswechsel, Scaler-Switch) bleiben synchron und bit-identisch. Achtung Reihenfolge im Stop-Callback: `clearAsync()` erst NACH `setScaleParameters()` (sonst blockiert dessen `ensurePrimed()` sofort auf dem frisch gestarteten Worker). |
 
+### Engine: Parallele Deck-Verarbeitung („Patch B", 2026-07-26)
+
+Fork-Feature über ETA Notes hinaus, Branch-Historie `feat/parallel-decks`.
+`EngineMixer::processChannels()` verarbeitet aktive Kanäle **gleichzeitig**
+(Pool `DeckWorker`, SCHED_FIFO 80, verfallen nie; ein Kanal läuft im
+Callback-Thread selbst; Join vorm Mischen) statt seriell — Callback-Kosten =
+Maximum statt Summe der Decks. Gemessen auf dem G9 (2 Stem-Decks, R3):
+Dauerbetrieb 17–21 ms → ~9–11 ms, Loop-/Hotcue-Sprung 45–65 ms (= Xrun bei
+jedem Sprung) → unter Budget.
+
+- Dateien: `src/engine/enginemixer.{h,cpp}` (ChannelProcessTask, Pool,
+  paralleler Zweig), `src/engine/sync/enginesync.h` (`syncDeckExists()`
+  public), `rubberbandworkerpool.cpp` (Pool auf 2 gleichzeitige Stem-Decks
+  dimensioniert: `2*(n-1)`, gekappt auf Kerne−2).
+- **Schalter:** `[App] parallel_decks 0` in `mixxx.cfg` stellt das serielle
+  Upstream-Verhalten wieder her (Default: an).
+- **Automatisch seriell** bei aktivem Sync-Lock (`syncDeckExists()`-Guard —
+  Sync-Code ist nicht nebenläufigkeitsfest; Verarbeitungsreihenfolge
+  Leader-zuerst muss dort gelten) und bei nur einem aktiven Kanal.
+- Bekannte Restfälle: Sync drücken ⇒ seriell ⇒ alte Lastsummen (gewollt);
+  Cue-Spamming kann vereinzelt grenzwertig sein (Kandidat „A3":
+  vorgewärmter Tausch-Stretcher); Stem-Laden auf ein Deck kann einen Burst
+  werfen (Stretcher-Neuallokation in `onSignalChanged()` läuft noch im
+  Callback — offener Fix-Kandidat).
+
 ### Dev-only (nicht feature-relevant)
 
 - **WSL-Guard** in `CMakeLists.txt` (~Z. 212): Upstreams `FATAL_ERROR` bei
