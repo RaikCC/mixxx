@@ -76,15 +76,18 @@ Offen: QML-Waveform-Pfad (Abschnitt 9 unten) und Rebase auf 2.6.0 stable.
 
 ### Standalone-Fixes (nicht Teil des ETA-Notes-Features)
 
-Zwei Fixes für **latente Upstream-Bugs**, unabhängig vom Feature — je ein isoliertes
+Fixes für **latente Upstream-Bugs**, unabhängig vom Feature — je ein isoliertes
 Commit, saubere Kandidaten für einen Upstream-PR. Nicht in `upstream/main` oder
-`upstream/2.6` enthalten (geprüft 2026-07-05), lösen sich also beim 2.6.0-Rebase
-**nicht** von selbst — nach dem Rebase erneut anwenden (trivialer Cherry-Pick).
+`upstream/2.6` enthalten (Relayout/MSAA geprüft 2026-07-05, RB-Pool geprüft
+2026-07-26), lösen sich also beim 2.6.0-Rebase **nicht** von selbst — nach dem
+Rebase erneut anwenden (trivialer Cherry-Pick).
 
 | Fix | Datei | Kern | Warum |
 |---|---|---|---|
 | Relayout-Hang | `src/widget/wlibrarysidebar.cpp` | H-Scrollbar der Sidebar deaktiviert | `QHeaderView::ResizeToContents` macht die Spaltenbreite von den sichtbaren Zeilen abhängig; Ein-/Ausblenden der H-Scrollbar ändert die Viewporthöhe → sichtbare Zeilen → Breite → Scrollbar-Bedarf. Bei bestimmten Größen endlose `setVisible ⇄ postEvent(LayoutRequest)`-Schleife (100 % CPU, Freeze/SIGABRT). Alle drei bekannten Trigger (Waveform-Grip-Drag, degeneriertes `stackedWaveforms_splitSize` beim Start, Panel-Toggle zur Laufzeit) münden hier. Live im hängenden Prozess per gdb bewiesen. |
 | Waveform-Flimmern | `src/waveform/waveformwidgetfactory.cpp` | 4x MSAA auf der Waveform-GL-Fläche (`getSurfaceFormat`) | Ohne Multisampling haben die 1–2 px schmalen, hart-kantigen Waveform-Zacken keine partielle Pixel-Deckung; beim Sub-Pixel-Scrollen kippen sie zwischen 1- und 2-Pixel-Deckung → sichtbares Kanten-Flimmern (unabhängig vom PLL-VSync-Timing). Der allshader-Renderer zeichnet in den Default-Framebuffer des Fensters, MSAA wird beim Swap aufgelöst. Betrifft nur den Legacy-Skin-Pfad; der QML-UI-Pfad hat separat MSAA (Issue #12536). |
+| RB-Pool seriell | `src/engine/bufferscalers/rubberbandworkerpool.cpp` | `reserveThread()`-Schleife im ctor entfernt | `QThreadPool` zählt Reservierungen zum `activeThreadCount()`; mit `maxThreadCount()` Reservierungen gelingt pro Buffer genau **ein** `tryStart()` (Recycling des wartenden Threads), alle weiteren Stretch-Tasks laufen still seriell im RT-Engine-Thread. Stem-Deck: 1 Task im Worker + 3 inline statt 3+1 parallel. Gegen die Qt-6.10-Quelle (`areAllThreadsActive()`) verifiziert. |
+| Keylock-Worker ohne RT-Prio | `src/engine/bufferscalers/rubberbandtask.cpp`, `rubberbandworkerpool.{h,cpp}` | Pool-Threads heißen `RBWorker` und heben sich beim ersten Task auf SCHED_FIFO 78 (unter dem Audio-Callback, geclampt auf `RLIMIT_RTPRIO`) | `QThread::HighPriority` ist auf Linux unter SCHED_OTHER wirkungslos → der RT-Callback wartet in `RubberBandWrapper::process()` an der Semaphore auf verdrängbare Worker = Prioritätsinversion = sporadische Skips, v. a. bei Stems + Keylock (R3 läuft bei Keylock **immer**, auch bei 0.00 %). Engine-Thread (Inline-Tasks) wird per objectName-Guard nicht angefasst. Live-Diagnose 2026-07-26 auf dem G9: Mixxx-Node `ERR=3`, genau ein Pool-Worker als `TS` neben `data-loop.0` `FF 83`. |
 
 ### Dev-only (nicht feature-relevant)
 
