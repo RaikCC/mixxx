@@ -59,7 +59,8 @@ Offen: QML-Waveform-Pfad (Abschnitt 9 unten) und Rebase auf 2.6.0 stable.
 |---|---|
 | `res/schema.xml` | Migration **v40**: Tabelle `track_notes` (`min_compatible="3"`) |
 | `src/database/mixxxdb.cpp` | `kRequiredSchemaVersion` 39 → 40 |
-| `src/track/track.{h,cpp}` | `getNotes()`/`setNotes()`/`notesUpdated()` exakt nach dem Cue-Muster |
+| `src/track/track.{h,cpp}` | `getNotes()`/`setNotes()`/`notesUpdated()` exakt nach dem Cue-Muster; zusätzlich `adjustReplayGainRatio()` (s. ReplayGain-Abschnitt unten) |
+| `src/widget/wtrackmenu.{h,cpp}` | Feature-Flag `AdjustReplayGain` + Untermenü „Adjust ReplayGain" mit dB-Stufen |
 | `src/library/dao/trackdao.{h,cpp}` | ctor nimmt `NotesDAO&`; Load/Save der Notes an beiden Save-Pfaden |
 | `src/library/trackcollection.{h,cpp}` | besitzt `NotesDAO`, `initialize()`, Purge-Hook |
 | `src/library/scanner/libraryscanner.cpp` | **eigene** DAO-Instanzen — eigener `NotesDAO`, inkl. `initialize()` |
@@ -114,6 +115,38 @@ jedem Sprung) → unter Budget.
   vorgewärmter Tausch-Stretcher); Stem-Laden auf ein Deck kann einen Burst
   werfen (Stretcher-Neuallokation in `onSignalChanged()` läuft noch im
   Callback — offener Fix-Kandidat).
+
+### Library: ReplayGain live korrigieren („Adjust ReplayGain", 2026-08-05)
+
+Fork-Feature über ETA Notes hinaus, Branch-Historie `feat/replaygain-live-edit`.
+Rechtsklick auf einen Track in der Bibliothek → Untermenü **„Adjust ReplayGain"**
+mit den Stufen +3/+2/+1/+0.5/−0.5/−1/−2/−3 dB. Korrigiert die Lautheit nach Gehör
+**mitten im Set**, ohne das Deck anzuhalten. Funktioniert auch auf einer
+Mehrfachauswahl und in den Deck-Widget-Menüs.
+
+- **Warum überhaupt nötig:** `Track::setReplayGain()` emittiert
+  `replayGainUpdated`, und `BaseTrackPlayerImpl::slotSetReplayGain()` **verwirft
+  das bei laufendem Deck** (nur `m_replaygainPending` wird gesetzt, eingelöst erst
+  beim Stopp) — bewusst gegen ungewollte Lautstärkesprünge. Für eine
+  Gehör-Korrektur ist genau das der Killer.
+- **Der genutzte Weg:** `Track::adjustReplayGainRatio()` skaliert das Ratio und
+  emittiert `replayGainAdjusted` mit **leerer** `requestingPlayerGroup`. In
+  `slotAdjustReplayGain()` wirkt das sofort auf jedes Deck, und weil kein Deck
+  sich als Auslöser erkennt, kompensiert auch keins die Änderung über sein
+  Pregain. `EnginePregain` blendet über ~1 s weich um (`kFadeSeconds`), es
+  knackst also nicht.
+- **Kein Wert ⇒ kein Nudge.** Ohne vorhandenen ReplayGain gibt es nichts zu
+  skalieren; ein Ersatz-Startpunkt 1.0 würde um den Default-Boost springen. Das
+  Untermenü ist dann ausgegraut, `adjustReplayGainRatio()` zusätzlich no-op.
+- **Persistenz:** `Mode::ApplyAndSave` — sonst hinge die Korrektur bis zum
+  Auswerfen des Tracks nur im RAM. Datei-Tags werden nur angefasst, wenn
+  `SyncTrackMetadataExport` an ist (bei Raik aus, wichtig: sonst würde jede
+  Korrektur eine ~40-MB-Stem-Datei neu durch den Gdrive-Sync schieben).
+- **Falle:** `WTrackMenu::featureIsEnabled()` hat im Modell-Modus ein `switch`
+  über die Flags mit `default: DEBUG_ASSERT(!"unreachable"); return false;`. Ein
+  neues Feature-Flag **braucht dort einen eigenen `case`**, sonst erscheint es in
+  keinem Bibliotheksmenü — und der Debug-Build assertet (die Assertions sind hier
+  scharf, `DEBUG_ASSERTIONS_FATAL=OFF`, also nur Log).
 
 ### Dev-only (nicht feature-relevant)
 
