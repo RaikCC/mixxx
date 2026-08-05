@@ -167,6 +167,12 @@ class Track : public QObject {
     void setReplayGain(const mixxx::ReplayGain&);
     // Adjust ReplayGain by multiplying the given gain amount.
     void adjustReplayGainFromPregain(double gain, const QString& requestingPlayerGroup);
+    // Adjust ReplayGain by multiplying the given gain amount, without any deck
+    // asking for it. In contrast to setReplayGain() this takes effect on every
+    // player holding the track even while it is playing, which is what makes
+    // correcting a level by ear during a set possible.
+    // Does nothing if the track has no ReplayGain value to scale yet.
+    void adjustReplayGainRatio(double gain);
     // Returns ReplayGain
     mixxx::ReplayGain getReplayGain() const;
 

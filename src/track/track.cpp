@@ -372,6 +372,23 @@ void Track::adjustReplayGainFromPregain(double gain, const QString& requestingPl
     }
 }
 
+void Track::adjustReplayGainRatio(double gain) {
+    auto locked = lockMutex(&m_qMutex);
+    mixxx::ReplayGain replayGain = m_record.getMetadata().getTrackInfo().getReplayGain();
+    if (!replayGain.hasRatio()) {
+        // Nothing to scale relative to; the track needs to be analyzed first.
+        return;
+    }
+    replayGain.setRatio(gain * replayGain.getRatio());
+    if (compareAndSet(m_record.refMetadata().refTrackInfo().ptrReplayGain(), replayGain)) {
+        markDirtyAndUnlock(&locked);
+        // An empty player group means no deck requested the change, so every
+        // player applies the new gain instead of cancelling it out with its
+        // own pregain.
+        emit replayGainAdjusted(replayGain, QString());
+    }
+}
+
 mixxx::Bpm Track::getBpmWhileLocked() const {
     // BPM values must be synchronized at all times!
     DEBUG_ASSERT(m_record.getMetadata().getTrackInfo().getBpm() ==
