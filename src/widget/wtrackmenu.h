@@ -58,11 +58,12 @@ class WTrackMenu : public QMenu {
         SelectInLibrary = 1 << 15,
         Analyze = 1 << 16,
         FindOnWeb = 1 << 17,
+        AdjustReplayGain = 1 << 18,
         TrackModelFeatures = Remove | HideUnhidePurge,
         All = AutoDJ | LoadTo | Playlist | Crate | Remove | Metadata | Reset | Analyze |
                 BPM | Color | HideUnhidePurge | RemoveFromDisk | FileBrowser |
                 Properties | SearchRelated | UpdateReplayGainFromPregain | SelectInLibrary |
-                FindOnWeb
+                FindOnWeb | AdjustReplayGain
     };
     Q_DECLARE_FLAGS(Features, Feature)
 
@@ -81,6 +82,7 @@ class WTrackMenu : public QMenu {
             WTrackMenu::Feature::FileBrowser |
             WTrackMenu::Feature::Properties |
             WTrackMenu::Feature::UpdateReplayGainFromPregain |
+            WTrackMenu::Feature::AdjustReplayGain |
             WTrackMenu::Feature::FindOnWeb |
             WTrackMenu::Feature::SelectInLibrary};
 
@@ -174,6 +176,7 @@ class WTrackMenu : public QMenu {
 
     // Info and metadata
     void slotUpdateReplayGainFromPregain();
+    void slotAdjustReplayGain(double deltaDb);
     void slotShowDlgTagFetcher();
     void slotImportMetadataFromFileTags();
     void slotExportMetadataIntoFileTags();
@@ -261,6 +264,11 @@ class WTrackMenu : public QMenu {
     void clearTrackSelection();
 
     std::pair<bool, bool> getTrackBpmLockStates() const;
+
+    /// Returns whether any selected track carries a ReplayGain value at all,
+    /// plus that value formatted as the library shows it. The text is only
+    /// filled for a single selected track, where showing it is unambiguous.
+    std::pair<bool, QString> getReplayGainMenuState() const;
     bool canUndoBeatsChange() const;
 
     /// Get the common rating of all selected tracks.
@@ -293,6 +301,7 @@ class WTrackMenu : public QMenu {
     parented_ptr<QMenu> m_pHotcueMenu;
     parented_ptr<QMenu> m_pClearMetadataMenu;
     parented_ptr<QMenu> m_pAnalyzeMenu;
+    parented_ptr<QMenu> m_pAdjustReplayGainMenu;
     parented_ptr<QMenu> m_pBPMMenu;
     parented_ptr<QMenu> m_pColorMenu;
     parented_ptr<WCoverArtMenu> m_pCoverMenu;

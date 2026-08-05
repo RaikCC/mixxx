@@ -7,6 +7,7 @@
 #include <QListWidget>
 #include <QModelIndex>
 #include <QVBoxLayout>
+#include <array>
 
 #include "analyzer/analyzerscheduledtrack.h"
 #include "analyzer/analyzersilence.h"
@@ -38,6 +39,7 @@
 #include "track/track.h"
 #include "util/defs.h"
 #include "util/desktophelper.h"
+#include "util/math.h"
 #include "util/parented_ptr.h"
 #include "util/qt.h"
 #include "util/widgethelper.h"
@@ -66,6 +68,20 @@ const QString samplerTrString(int i) {
 
 const char* kOrigTrTextProperty = "origTrText";
 const char* kBpmScaleProperty = "bpmScale";
+
+// Steps offered for correcting a track's loudness by ear, in dB. Loud to quiet,
+// so the menu reads the same way a gain fader moves.
+constexpr std::array<double, 8> kReplayGainStepsDb = {
+        3.0, 2.0, 1.0, 0.5, -0.5, -1.0, -2.0, -3.0};
+
+// Matches the precision of the library's ReplayGain column.
+constexpr int kReplayGainMenuPrecision = 2;
+
+QString replayGainStepText(double deltaDb) {
+    return QStringLiteral("%1%2 dB")
+            .arg(deltaDb > 0 ? QStringLiteral("+") : QString())
+            .arg(deltaDb, 0, 'f', 1);
+}
 
 void appendBpmPreviewtoBpmAction(QAction* pAction, const double bpm) {
     QString text = pAction->property(kOrigTrTextProperty).toString();
@@ -231,6 +247,11 @@ void WTrackMenu::createMenus() {
     if (featureIsEnabled(Feature::Analyze)) {
         m_pAnalyzeMenu = make_parented<QMenu>(this);
         m_pAnalyzeMenu->setTitle(tr("Analyze"));
+    }
+
+    if (featureIsEnabled(Feature::AdjustReplayGain)) {
+        m_pAdjustReplayGainMenu = make_parented<QMenu>(this);
+        m_pAdjustReplayGainMenu->setTitle(tr("Adjust ReplayGain"));
     }
 
     if (featureIsEnabled(Feature::SearchRelated)) {
@@ -587,6 +608,16 @@ void WTrackMenu::createActions() {
                 &WTrackMenu::slotUpdateReplayGainFromPregain);
     }
 
+    if (featureIsEnabled(Feature::AdjustReplayGain)) {
+        for (const double deltaDb : kReplayGainStepsDb) {
+            auto* pAction = new QAction(replayGainStepText(deltaDb), m_pAdjustReplayGainMenu);
+            connect(pAction, &QAction::triggered, this, [this, deltaDb]() {
+                slotAdjustReplayGain(deltaDb);
+            });
+            m_pAdjustReplayGainMenu->addAction(pAction);
+        }
+    }
+
     if (featureIsEnabled(Feature::Color)) {
         ColorPaletteSettings colorPaletteSettings(m_pConfig);
         m_pColorPickerAction = make_parented<WColorPickerAction>(WColorPicker::Option::AllowNoColor,
@@ -747,6 +778,10 @@ void WTrackMenu::setupActions() {
         addMenu(m_pAnalyzeMenu);
     }
 
+    if (featureIsEnabled(Feature::AdjustReplayGain)) {
+        addMenu(m_pAdjustReplayGainMenu);
+    }
+
     // This action is created only for menus instantiated by deck widgets (e.g.
     // WTrackProperty) and if UpdateReplayGainFromPregain is supported.
     if (m_pUpdateReplayGainAct) {
@@ -807,6 +842,33 @@ std::pair<bool, bool> WTrackMenu::getTrackBpmLockStates() const {
         anyBpmNotLocked = !anyBpmLocked;
     }
     return std::pair<bool, bool>(anyBpmLocked, anyBpmNotLocked);
+}
+
+std::pair<bool, QString> WTrackMenu::getReplayGainMenuState() const {
+    bool anyHasReplayGain = false;
+    QString singleTrackText;
+    if (m_pTrackModel) {
+        const int column = m_pTrackModel->fieldIndex(LIBRARYTABLE_REPLAYGAIN);
+        for (const auto& trackIndex : m_trackIndexList) {
+            // The model already renders this column as "-7.62 dB", and as an
+            // empty string when the track has no value.
+            const QString text =
+                    trackIndex.sibling(trackIndex.row(), column).data().toString();
+            if (!text.isEmpty()) {
+                anyHasReplayGain = true;
+                if (m_trackIndexList.size() == 1) {
+                    singleTrackText = text;
+                }
+                break;
+            }
+        }
+    } else if (m_pTrack) {
+        const mixxx::ReplayGain replayGain = m_pTrack->getReplayGain();
+        anyHasReplayGain = replayGain.hasRatio();
+        singleTrackText = mixxx::ReplayGain::ratioToString(
+                replayGain.getRatio(), kReplayGainMenuPrecision);
+    }
+    return std::pair<bool, QString>(anyHasReplayGain, singleTrackText);
 }
 
 int WTrackMenu::getCommonTrackRating() const {
@@ -1169,6 +1231,17 @@ void WTrackMenu::updateMenus() {
         }
     }
 
+    if (featureIsEnabled(Feature::AdjustReplayGain)) {
+        // A relative nudge needs an existing value to scale, so offer the menu
+        // only where there is one. Showing the current value spares a trip to
+        // the track properties while judging a correction by ear.
+        const auto [anyHasReplayGain, replayGainText] = getReplayGainMenuState();
+        m_pAdjustReplayGainMenu->setTitle(replayGainText.isEmpty()
+                        ? tr("Adjust ReplayGain")
+                        : tr("Adjust ReplayGain (%1)").arg(replayGainText));
+        m_pAdjustReplayGainMenu->menuAction()->setEnabled(anyHasReplayGain);
+    }
+
     // This action is created only for menus instantiated by deck widgets (e.g.
     // WTrackProperty) and if UpdateReplayGainFromPregain is supported.
     // Disable it if no deck group was set.
@@ -1468,6 +1541,38 @@ void WTrackMenu::slotUpdateReplayGainFromPregain() {
         return;
     }
     m_pTrack->adjustReplayGainFromPregain(gain, m_deckGroup);
+}
+
+namespace {
+
+class AdjustReplayGainTrackPointerOperation : public mixxx::TrackPointerOperation {
+  public:
+    explicit AdjustReplayGainTrackPointerOperation(double gain)
+            : m_gain(gain) {
+    }
+
+  private:
+    void doApply(
+            const TrackPointer& pTrack) const override {
+        pTrack->adjustReplayGainRatio(m_gain);
+    }
+
+    const double m_gain;
+};
+
+} // anonymous namespace
+
+void WTrackMenu::slotAdjustReplayGain(double deltaDb) {
+    const auto progressLabelText =
+            tr("Adjusting replay gain of %n track(s)", "", getTrackCount());
+    const auto trackOperator =
+            AdjustReplayGainTrackPointerOperation(db2ratio(deltaDb));
+    applyTrackPointerOperation(
+            progressLabelText,
+            &trackOperator,
+            // Write the new value straight to the database. A correction made
+            // mid-set would otherwise sit in memory until the track is ejected.
+            mixxx::ModalTrackBatchOperationProcessor::Mode::ApplyAndSave);
 }
 
 void WTrackMenu::slotTranslateBeatsHalf() {
@@ -2996,6 +3101,8 @@ bool WTrackMenu::featureIsEnabled(Feature flag) const {
     case Feature::BPM:
         return m_pTrackModel->hasCapabilities(TrackModel::Capability::EditMetadata);
     case Feature::Color:
+        return m_pTrackModel->hasCapabilities(TrackModel::Capability::EditMetadata);
+    case Feature::AdjustReplayGain:
         return m_pTrackModel->hasCapabilities(TrackModel::Capability::EditMetadata);
     case Feature::HideUnhidePurge:
         return m_pTrackModel->hasCapabilities(TrackModel::Capability::Hide) ||
