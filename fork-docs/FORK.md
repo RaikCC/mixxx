@@ -3,7 +3,7 @@
 Dieses Dokument ist für Menschen und KI-Agenten, die auf einer beliebigen Maschine
 an diesem Fork weiterarbeiten oder ihn auf einen neuen Upstream-Stand rebasen.
 Es beschreibt **Struktur und Intent** — die Detailhistorie steht in den Commits
-(`git log origin/2.6..eta-notes`).
+(`git log upstream/2.6..eta-notes`).
 
 Feature-Spezifikation: [KONZEPT.md](KONZEPT.md). §-Verweise hier und in
 Commit-Messages („§7", „§10") meinen dessen Abschnitte.
@@ -25,8 +25,8 @@ Offen: QML-Waveform-Pfad (Abschnitt 9 unten) und Rebase auf 2.6.0 stable.
 
 | Remote | URL | Zweck |
 |---|---|---|
-| `origin` | `mixxxdj/mixxx` (Upstream) | nur `fetch` — Basis für Rebase |
-| `mirror` | `RaikCC/mixxx` (public) | Arbeits-Remote: Backup-Push, CI, Releases |
+| `origin` | `RaikCC/mixxx` (public) | Arbeits-Remote: Backup-Push, CI, Releases |
+| `upstream` | `mixxxdj/mixxx` | nur `fetch` — Basis für Rebase |
 
 - `RaikCC/mixxx` ist ein **eigenständiges Repo, kein GitHub-Fork** (Forks
   öffentlicher Repos wären zwangsläufig public gewesen, als das Repo noch privat
@@ -34,8 +34,12 @@ Offen: QML-Waveform-Pfad (Abschnitt 9 unten) und Rebase auf 2.6.0 stable.
   `eta-notes`.
 - Branch **`eta-notes`**, abgezweigt von Upstream-`2.6` (Merge-Base `002e0e9a4a`).
   Raik nutzt 2.6 wegen der **Stems-Unterstützung**.
-- Sichern: `git push mirror eta-notes`. Achtung: jeder Push triggert den vollen
+- Sichern: `git push origin <branch>`. Achtung: jeder Push triggert den vollen
   CI-Build (Abschnitt 7).
+- Diese Namen gelten für Raiks Linux-Checkout (`~/mixxx-drag-crash/mixxx-src`).
+  Ein älterer Checkout auf der Windows-/WSL-Maschine benutzt sie **vertauscht**
+  (`origin` = Upstream, `mirror` = RaikCC). Im Zweifel `git remote -v` fragen,
+  bevor man pusht oder rebast — sonst zeigt `origin/2.6` ins Leere.
 
 ## 3. Fork-Änderungen nach Bereich
 
@@ -191,8 +195,8 @@ Mehrfachauswahl und in den Deck-Widget-Menüs.
 Ziel: irgendwann auf **2.6.0 stable** (Upstream-Branch `2.6` bzw. Release-Tag).
 
 ```bash
-git fetch origin
-git rebase origin/2.6          # oder: git rebase <release-tag>
+git fetch upstream
+git rebase upstream/2.6        # oder: git rebase <release-tag>
 ```
 
 Danach prüfen:
@@ -264,7 +268,8 @@ WSL-Guard-Patch nötig (Abschnitt 3).
   Content-Breite via `idealWidth()`.
 - `LibraryScanner` hat **eigene** DAO-Instanzen — neue DAOs dort separat
   verdrahten **und** initialisieren (vergessenes `initialize()` war ein echter Bug).
-- `gh` ohne `-R RaikCC/mixxx` operiert auf `origin` = Upstream.
+- `-R RaikCC/mixxx` bei `gh` trotzdem immer mitgeben: hier zeigt `origin` zwar
+  schon auf RaikCC, auf der WSL-Maschine aber auf Upstream (Abschnitt 2).
 - Push + zusätzliches `gh workflow run` = **zwei** Builds; eins canceln.
 - Commit-Messages mit Apostroph/Klammern brechen `wsl bash -lc '…'`-Quoting →
   Message in Datei schreiben, `git commit -F <datei>`.

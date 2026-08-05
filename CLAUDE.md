@@ -12,10 +12,12 @@ Rebase-Leitfaden. Die Feature-Spezifikation ist `fork-docs/KONZEPT.md` —
 
 ## Das Wichtigste in Kürze
 
-- Branch **`eta-notes`** (abgezweigt von Upstream-`2.6`). Remote **`mirror`** =
-  `github.com/RaikCC/mixxx` (dorthin pushen); `origin` = Upstream `mixxxdj/mixxx`
-  (nur fetch/rebase). Bei `gh`-Befehlen immer `-R RaikCC/mixxx` angeben, sonst
-  greift `gh` auf den origin-Remote (Upstream) zu.
+- Branch **`eta-notes`** (abgezweigt von Upstream-`2.6`). In diesem Checkout ist
+  **`origin`** = `github.com/RaikCC/mixxx` (dorthin pushen) und **`upstream`** =
+  `mixxxdj/mixxx` (nur fetch/rebase). Auf der Windows-/WSL-Maschine heißen die
+  beiden vertauscht (`origin` = Upstream, `mirror` = RaikCC) — vor Push oder
+  Rebase `git remote -v` prüfen. Bei `gh`-Befehlen immer `-R RaikCC/mixxx`
+  angeben, damit es überall gleich funktioniert.
 - Schema-Migration **v40** (`track_notes`) ist rückwärtskompatibel
   (`min_compatible="3"`) — das darf nicht brechen, Raiks offizielle
   Windows-2.6.0-beta öffnet dieselbe DB.
