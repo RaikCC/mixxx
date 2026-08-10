@@ -120,6 +120,31 @@ jedem Sprung) → unter Budget.
   werfen (Stretcher-Neuallokation in `onSignalChanged()` läuft noch im
   Callback — offener Fix-Kandidat).
 
+### Engine: Kohärentes Stem-Stretching (2026-08-11)
+
+Fork-Feature über ETA Notes hinaus, Branch-Historie `feat/coherent-stem-keylock`.
+Stem-Decks werden von **einer** RubberBand-Instanz über alle 8 Kanäle gestretcht
+(mit `OptionChannelsTogether`, auch für R2 erzwungen) statt vom Upstream-Split in
+4 unabhängige Stereo-Instanzen.
+
+- **Warum:** Die 4 getrennten Instanzen treffen bei **Ratio-Änderungen**
+  (Keylock-Pitch-Bend) eigene, inhaltsabhängige Transienten-/Phasen-
+  Entscheidungen → die Stems driften Millisekunden gegeneinander → Kammfilter
+  in der Summe. In Mixxx-Aufnahme gemessen (gleicher Loop, ohne/mit Bend):
+  **−2,5…−3,2 dB @ 1–8 kHz** („dumpf"). Gegen librubberband-C-API reproduziert
+  (blockweise `setTimeRatio`, realtime, R3): eine kohärente 8-Kanal-Instanz
+  halbiert den Präsenzverlust auf das Niveau einer vorgemischten Stereo-Datei.
+  Bei konstanter Ratio sind beide Varianten identisch — deshalb fiel es nur
+  beim Bend auf. Diagnose-Historie: `~/mixxx-fork-r3-project/project.md`.
+- **Kosten:** ~10 ms/46-ms-Block auf dem G9, inline im jeweiligen `DeckWorker`
+  (Parallel-Decks trägt die Last; der RB-Pool bleibt für den
+  `keylock_multithreading`-Stereo-Split bestehen, läuft bei Stems aber leer).
+- **Dateien:** `rubberbandwrapper.cpp` (Single-Instance-Zweig in `setup()`),
+  `rubberbandworkerpool.{h,cpp}` (Config-Flag + Accessor).
+- **Schalter:** `[App] keylock_coherent_stems 0` stellt den Upstream-Split
+  wieder her (Default: an). Verify im Log: `coherent stem stretching, one 8
+  channel instance` statt `using 2 channel(s) per task`.
+
 ### Library: ReplayGain live korrigieren („Adjust ReplayGain", 2026-08-05)
 
 Fork-Feature über ETA Notes hinaus, Branch-Historie `feat/replaygain-live-edit`.
