@@ -215,6 +215,29 @@ void RubberBandWrapper::setup(mixxx::audio::SampleRate sampleRate,
         m_pInstances.clear();
     };
 
+    RubberBandWorkerPool* pPool = RubberBandWorkerPool::instance();
+    if (chCount > mixxx::kEngineChannelOutputCount && pPool && pPool->coherentStems()) {
+        // Coherent stem stretching: run all stem channels through a single
+        // stretcher so they share one transient/phase analysis. Independent
+        // per-stem instances each make their own content-dependent phase
+        // decisions whenever the time ratio changes (keylock pitch bend):
+        // the stems drift against each other by a few milliseconds and
+        // their sum comb-filters - measured as a 2.5-3 dB loss at 1-8 kHz.
+        // A single instance with OptionChannelsTogether keeps the stems
+        // phase-locked; the CPU cost stays off the engine callback because
+        // each deck processes in its own DeckWorker thread (see
+        // EngineMixer::processChannels).
+        m_channelPerWorker = chCount;
+        qDebug() << "RubberBandWrapper::setup - coherent stem stretching, one"
+                 << chCount << "channel instance";
+        m_pInstances.emplace_back(std::make_unique<RubberBandTask>(sampleRate,
+                chCount,
+                // Force the shared analysis even for the R2 engine, which
+                // upstream only pairs with OptionChannelsTogether on R3.
+                opt | RubberBandStretcher::OptionChannelsTogether));
+        return;
+    }
+
     m_channelPerWorker = getChannelPerWorker(chCount);
     qDebug() << "RubberBandWrapper::setup - using" << m_channelPerWorker << "channel(s) per task";
     VERIFY_OR_DEBUG_ASSERT(0 == chCount % m_channelPerWorker) {

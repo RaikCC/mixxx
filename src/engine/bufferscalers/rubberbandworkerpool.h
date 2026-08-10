@@ -20,12 +20,20 @@ class RubberBandWorkerPool : public QThreadPool, public Singleton<RubberBandWork
         return m_channelPerWorker;
     }
 
+    /// Whether STEM tracks are stretched by a single multi-channel instance
+    /// sharing one analysis instead of independent per-stem instances
+    /// distributed over this pool (see RubberBandWrapper::setup).
+    bool coherentStems() const {
+        return m_coherentStems;
+    }
+
   protected:
     RubberBandWorkerPool(UserSettingsPointer pConfig = nullptr);
 
   private:
     ;
     mixxx::audio::ChannelCount m_channelPerWorker;
+    bool m_coherentStems;
 
     friend class Singleton<RubberBandWorkerPool>;
 };

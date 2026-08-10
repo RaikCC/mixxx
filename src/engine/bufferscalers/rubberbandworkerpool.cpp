@@ -16,6 +16,16 @@ RubberBandWorkerPool::RubberBandWorkerPool(UserSettingsPointer pConfig)
             : mixxx::audio::ChannelCount::stereo();
     DEBUG_ASSERT(mixxx::kMaxEngineChannelInputCount % m_channelPerWorker == 0);
 
+    // [App]keylock_coherent_stems (default on): stretch STEM tracks in one
+    // multi-channel RubberBand instance (shared analysis, phase-coherent
+    // stems) instead of splitting them across this pool. See
+    // RubberBandWrapper::setup for the rationale. While enabled, the pool
+    // only serves the keylock_multithreading stereo split.
+    m_coherentStems = !pConfig ||
+            pConfig->getValue(ConfigKey(QStringLiteral("[App]"),
+                                      QStringLiteral("keylock_coherent_stems")),
+                    true);
+
     int numCore = QThread::idealThreadCount();
     int numRBTasksPerDeck = mixxx::kMaxEngineChannelInputCount / m_channelPerWorker;
 
