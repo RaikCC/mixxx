@@ -136,9 +136,26 @@ Stem-Decks werden von **einer** RubberBand-Instanz über alle 8 Kanäle gestretc
   halbiert den Präsenzverlust auf das Niveau einer vorgemischten Stereo-Datei.
   Bei konstanter Ratio sind beide Varianten identisch — deshalb fiel es nur
   beim Bend auf. Diagnose-Historie: `~/mixxx-fork-r3-project/project.md`.
-- **Kosten:** ~10 ms/46-ms-Block auf dem G9, inline im jeweiligen `DeckWorker`
-  (Parallel-Decks trägt die Last; der RB-Pool bleibt für den
-  `keylock_multithreading`-Stereo-Split bestehen, läuft bei Stems aber leer).
+- **Wirkung nachgemessen** (2026-08-11, Aufnahmepaare mit identischer Bend-Tiefe
+  −2,98 %, per Onset-Autokorrelation verifiziert): Präsenzband **2–4 kHz von
+  −3,2 auf −1,5 dB**, 4–8 kHz von −3,0 auf −1,8 dB, 1–2 kHz von −2,5 auf
+  −1,4 dB. Der Rest ist der Eigenpreis dynamischen Stretchings (eine normale
+  Stereo-Datei zahlt ~1 dB) — ein hörbarer Restunterschied bleibt also
+  bauartbedingt.
+- **Kosten (gemessen, G9 / i5-12400, `pw-top`):** 1 Stem-Deck 11,3 ms, zwei
+  Stem-Decks + Bend 12,2 ms median / 14,3 ms max von 46,4 ms (26 / 31 %),
+  ERR 0. Zwei Decks kosten nur ~1 ms mehr als eines — Parallel-Decks zahlt
+  das Maximum statt der Summe (seriell wären es ~22 ms). Läuft inline im
+  jeweiligen `DeckWorker`; der RB-Pool bleibt für den
+  `keylock_multithreading`-Stereo-Split bestehen, läuft bei Stems aber leer
+  (keine `RBWorker`-Threads mehr sichtbar).
+- **Achtung Latenz: die Kosten skalieren NICHT mit der Puffergröße.** Bei
+  1024/44100 bleibt BUSY bei ~12 ms (identischer Absolutwert wie bei 2048) ⇒
+  52 % Auslastung statt 26 %, und die ohnehin nicht mitskalierenden Spitzen
+  reißen die 23-ms-Frist: 7 Xruns in ~15 s Spielzeit, Skips hörbar (Mixxx'
+  eigener Node, Interface-Node ERR 0). Ursache: fixer Aufwand pro Callback
+  (R3-interne Festfenster, Worker-Wakeup/Semaphore) dominiert gegenüber der
+  Sample-Zahl. **2048 ist für Stems + R3 gesetzt.**
 - **Dateien:** `rubberbandwrapper.cpp` (Single-Instance-Zweig in `setup()`),
   `rubberbandworkerpool.{h,cpp}` (Config-Flag + Accessor).
 - **Schalter:** `[App] keylock_coherent_stems 0` stellt den Upstream-Split
