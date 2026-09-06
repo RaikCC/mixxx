@@ -11,18 +11,18 @@ Variables:
   <WidgetGroup><!-- fixed slot, keeps the line even while the row is hidden -->
     <ObjectName>DownbeatRowSlot</ObjectName>
     <Layout>horizontal</Layout>
-    <Size>62f,4f</Size>
+    <Size>93f,8f</Size>
     <Children>
 
       <WidgetGroup>
         <ObjectName>DownbeatRow</ObjectName>
         <Layout>horizontal</Layout>
-        <Size>62f,4f</Size>
+        <Size>93f,8f</Size>
         <Children>
 
           <WidgetGroup>
             <ObjectName>DownbeatSegment</ObjectName>
-            <Size>14f,4f</Size>
+            <Size>21f,8f</Size>
             <Connection>
               <ConfigKey>[Channel<Variable name="ChanNum"/>],downbeat_phase</ConfigKey>
               <Transform><IsEqual>0</IsEqual></Transform>
@@ -32,7 +32,7 @@ Variables:
 
           <WidgetGroup>
             <ObjectName>DownbeatSegment</ObjectName>
-            <Size>14f,4f</Size>
+            <Size>21f,8f</Size>
             <Connection>
               <ConfigKey>[Channel<Variable name="ChanNum"/>],downbeat_phase</ConfigKey>
               <Transform><IsEqual>1</IsEqual></Transform>
@@ -42,7 +42,7 @@ Variables:
 
           <WidgetGroup>
             <ObjectName>DownbeatSegment</ObjectName>
-            <Size>14f,4f</Size>
+            <Size>21f,8f</Size>
             <Connection>
               <ConfigKey>[Channel<Variable name="ChanNum"/>],downbeat_phase</ConfigKey>
               <Transform><IsEqual>2</IsEqual></Transform>
@@ -52,7 +52,7 @@ Variables:
 
           <WidgetGroup>
             <ObjectName>DownbeatSegment</ObjectName>
-            <Size>14f,4f</Size>
+            <Size>21f,8f</Size>
             <Connection>
               <ConfigKey>[Channel<Variable name="ChanNum"/>],downbeat_phase</ConfigKey>
               <Transform><IsEqual>3</IsEqual></Transform>

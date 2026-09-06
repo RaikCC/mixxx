@@ -412,7 +412,7 @@ WOverview QLabel {
   }
   #DownbeatRowSlot,
   #DownbeatRow {
-    qproperty-layoutSpacing: 2;
+    qproperty-layoutSpacing: 3;
     qproperty-layoutContentsMargins: rect(0 0 0 0);
     background: transparent;
     border: 0px;
