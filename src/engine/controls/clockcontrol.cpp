@@ -2,9 +2,12 @@
 
 #include "control/controlobject.h"
 #include "control/controlproxy.h"
+#include "control/controlpushbutton.h"
 #include "engine/controls/enginecontrol.h"
+#include "engine/enginebuffer.h"
 #include "moc_clockcontrol.cpp"
 #include "preferences/usersettings.h"
+#include "track/downbeat.h"
 #include "track/track.h"
 
 namespace {
@@ -18,6 +21,13 @@ constexpr double kSignificiantRateThreshold =
 ClockControl::ClockControl(const QString& group, UserSettingsPointer pConfig)
         : EngineControl(group, pConfig),
           m_pCOBeatActive(std::make_unique<ControlObject>(ConfigKey(group, "beat_active"))),
+          m_pCODownbeatSet(std::make_unique<ControlPushButton>(
+                  ConfigKey(group, "downbeat_set"))),
+          m_pCODownbeatActive(std::make_unique<ControlObject>(
+                  ConfigKey(group, "downbeat_active"))),
+          m_pCODownbeatPhase(std::make_unique<ControlObject>(
+                  ConfigKey(group, "downbeat_phase"))),
+          m_downbeatPosition(mixxx::audio::kInvalidFramePos),
           m_pLoopEnabled(std::make_unique<ControlProxy>(group, "loop_enabled", this)),
           m_pLoopStartPosition(std::make_unique<ControlProxy>(group, "loop_start_position", this)),
           m_pLoopEndPosition(std::make_unique<ControlProxy>(group, "loop_end_position", this)),
@@ -29,6 +39,16 @@ ClockControl::ClockControl(const QString& group, UserSettingsPointer pConfig)
           m_internalState(StateMachine::outsideIndicationArea) {
     m_pCOBeatActive->setReadOnly();
     m_pCOBeatActive->forceSet(0.0);
+
+    connect(m_pCODownbeatSet.get(),
+            &ControlObject::valueChanged,
+            this,
+            &ClockControl::slotDownbeatSet,
+            Qt::DirectConnection);
+    m_pCODownbeatActive->setReadOnly();
+    m_pCODownbeatActive->forceSet(0.0);
+    m_pCODownbeatPhase->setReadOnly();
+    m_pCODownbeatPhase->forceSet(mixxx::kInvalidDownbeatPhase);
 }
 
 ClockControl::~ClockControl() = default;
@@ -36,10 +56,76 @@ ClockControl::~ClockControl() = default;
 // called from an engine worker thread
 void ClockControl::trackLoaded(TrackPointer pNewTrack) {
     mixxx::BeatsPointer pBeats;
+    mixxx::audio::FramePos downbeatPosition;
     if (pNewTrack) {
         pBeats = pNewTrack->getBeats();
+        downbeatPosition = pNewTrack->getDownbeatPosition();
     }
+    trackDownbeatUpdated(downbeatPosition);
     trackBeatsUpdated(pBeats);
+}
+
+// called from the GUI thread when the downbeat was set or removed, and from
+// an engine worker thread when a track is loaded
+void ClockControl::trackDownbeatUpdated(mixxx::audio::FramePos downbeatPosition) {
+    m_downbeatPosition.setValue(downbeatPosition);
+    m_pCODownbeatActive->forceSet(downbeatPosition.isValid() ? 1.0 : 0.0);
+    if (!downbeatPosition.isValid()) {
+        // Without a downbeat there is no bar to point at. Don't wait for the
+        // next engine callback, the deck may well be stopped.
+        m_pCODownbeatPhase->forceSet(mixxx::kInvalidDownbeatPhase);
+    }
+}
+
+void ClockControl::slotDownbeatSet(double v) {
+    if (v <= 0) {
+        return;
+    }
+    EngineBuffer* pEngineBuffer = getEngineBuffer();
+    if (!pEngineBuffer) {
+        return;
+    }
+    TrackPointer pTrack = pEngineBuffer->getLoadedTrack();
+    if (!pTrack) {
+        return;
+    }
+    const mixxx::BeatsPointer pBeats = pTrack->getBeats();
+    if (!pBeats) {
+        return;
+    }
+    const auto currentPosition = frameInfo().currentPosition;
+    if (!currentPosition.isValid()) {
+        return;
+    }
+    const auto closestBeat = pBeats->findClosestBeat(currentPosition);
+    if (!closestBeat.isValid()) {
+        return;
+    }
+
+    const auto downbeatPosition = pTrack->getDownbeatPosition();
+    if (mixxx::isDownbeatAt(*pBeats, downbeatPosition, closestBeat)) {
+        // The hit beat already is a downbeat: remove the track's downbeat
+        // information altogether.
+        pTrack->setDownbeatPosition(mixxx::audio::kInvalidFramePos);
+    } else {
+        // Anywhere else: this beat becomes the new downbeat, and any previous
+        // downbeat is replaced rather than kept.
+        pTrack->setDownbeatPosition(closestBeat);
+    }
+}
+
+void ClockControl::updateDownbeatIndicator(mixxx::audio::FramePos currentPosition) {
+    const auto downbeatPosition = m_downbeatPosition.getValue();
+    const mixxx::BeatsPointer pBeats = m_pBeats;
+
+    int phase = mixxx::kInvalidDownbeatPhase;
+    if (pBeats && downbeatPosition.isValid()) {
+        phase = mixxx::downbeatPhaseAt(*pBeats, downbeatPosition, currentPosition);
+    }
+
+    if (phase != static_cast<int>(m_pCODownbeatPhase->get())) {
+        m_pCODownbeatPhase->forceSet(phase);
+    }
 }
 
 void ClockControl::trackBeatsUpdated(mixxx::BeatsPointer pBeats) {
@@ -51,6 +137,10 @@ void ClockControl::trackBeatsUpdated(mixxx::BeatsPointer pBeats) {
 void ClockControl::updateIndicators(const double dRate,
         mixxx::audio::FramePos currentPosition,
         mixxx::audio::SampleRate sampleRate) {
+    // Unlike beat_active below this must also follow a deck that is being
+    // scrubbed or is standing still, so it is updated before the early return.
+    updateDownbeatIndicator(currentPosition);
+
     /* This method sets the control beat_active is set to the following values:
     *  0.0 --> No beat indication (outside 20% area or play direction changed while indication was on)
     *  1.0 --> Forward playing, set at the beat and set back to 0.0 at 20% of beat distance

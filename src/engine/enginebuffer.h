@@ -267,6 +267,7 @@ class EngineBuffer : public EngineObject {
     // Fired when passthrough mode is enabled or disabled.
     void slotPassthroughChanged(double v);
     void slotUpdatedTrackBeats();
+    void slotUpdatedTrackDownbeat();
 
   private:
     struct QueuedSeek {

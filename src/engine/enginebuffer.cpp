@@ -682,6 +682,11 @@ void EngineBuffer::notifyTrackLoaded(
                 &Track::beatsUpdated,
                 this,
                 &EngineBuffer::slotUpdatedTrackBeats);
+        disconnect(
+                pOldTrack.get(),
+                &Track::downbeatPositionChanged,
+                this,
+                &EngineBuffer::slotUpdatedTrackDownbeat);
     }
 
     // First inform engineControls directly
@@ -698,6 +703,11 @@ void EngineBuffer::notifyTrackLoaded(
                 &Track::beatsUpdated,
                 this,
                 &EngineBuffer::slotUpdatedTrackBeats,
+                Qt::DirectConnection);
+        connect(pNewTrack.get(),
+                &Track::downbeatPositionChanged,
+                this,
+                &EngineBuffer::slotUpdatedTrackDownbeat,
                 Qt::DirectConnection);
         connect(pNewTrack.get(),
                 &Track::bpmLockChanged,
@@ -1665,6 +1675,13 @@ void EngineBuffer::slotUpdatedTrackBeats() {
         for (const auto& pControl : std::as_const(m_engineControls)) {
             pControl->trackBeatsUpdated(pTrack->getBeats());
         }
+    }
+}
+
+void EngineBuffer::slotUpdatedTrackDownbeat() {
+    TrackPointer pTrack = m_pCurrentTrack;
+    if (pTrack) {
+        m_pClockControl->trackDownbeatUpdated(pTrack->getDownbeatPosition());
     }
 }
 

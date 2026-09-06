@@ -468,6 +468,14 @@ void Tooltips::addStandardTooltips() {
             << QString("%1: %2").arg(leftClick, tr("Adjust beatgrid so the closest beat is aligned with the current play position."))
             << QString("%1: %2").arg(rightClick, tr("Adjust beatgrid to match another playing deck."));
 
+    add("downbeat_set")
+            << tr("Downbeat")
+            << tr("Mark the beat closest to the play position as a downbeat, "
+                  "the first beat of a bar.")
+            << tr("Every 4th beat from there is a downbeat as well.")
+            << tr("Press again on a beat that already is a downbeat to remove "
+                  "the downbeat from the track.");
+
     add("beats_translate_match_alignment")
             << tr("Adjust Beatgrid")
             << tr("Adjust beatgrid to match another playing deck.");
