@@ -34,8 +34,9 @@ Offen: QML-Waveform-Pfad (Abschnitt 9 unten) und Rebase auf 2.6.0 stable.
   `eta-notes`.
 - Branch **`eta-notes`**, abgezweigt von Upstream-`2.6` (Merge-Base `002e0e9a4a`).
   Raik nutzt 2.6 wegen der **Stems-Unterstützung**.
-- Sichern: `git push origin <branch>`. Achtung: jeder Push triggert den vollen
-  CI-Build (Abschnitt 7).
+- Sichern: `git push origin <branch>`. Löst **nichts** aus — `develop.yml` ist im
+  Repo auf `disabled_manually` gestellt (`gh workflow list -R RaikCC/mixxx --all`).
+  CI-Läufe müssen seitdem von Hand angestoßen werden, siehe Abschnitt 7.
 - Diese Namen gelten für Raiks Linux-Checkout (`~/mixxx-drag-crash/mixxx-src`).
   Ein älterer Checkout auf der Windows-/WSL-Maschine benutzt sie **vertauscht**
   (`origin` = Upstream, `mirror` = RaikCC). Im Zweifel `git remote -v` fragen,
@@ -76,7 +77,7 @@ Offen: QML-Waveform-Pfad (Abschnitt 9 unten) und Rebase auf 2.6.0 stable.
 | `src/preferences/dialog/dlgpreferences.cpp` | ETA-Notes-Seite als letzte Pref-Seite (nach „Modplug Decoder") |
 | `res/mixxx.qrc` | Icon registriert (Pref-Icons kommen aus Qt-Resources, nicht Dateisystem) |
 | `CMakeLists.txt` | neue `.cpp`s im `mixxx-lib`-Block; **WSL-Guard** deaktiviert (dev-only, s.u.) |
-| `.github/workflows/build.yml` | `StemControlTest` auf beiden Windows-Matrix-Einträgen ausgeschlossen (Runner-Artefakt: ALAC-Stem-Load-Timeout → SegFault; ARM64 bestand identischen Code) |
+| `.github/workflows/build.yml` | `StemControlTest` auf beiden Windows-Matrix-Einträgen ausgeschlossen (Runner-Artefakt: ALAC-Stem-Load-Timeout → SegFault; ARM64 bestand identischen Code). **Auch lokal flaky**, siehe Abschnitt 6 |
 | `src/widget/wlibrarysidebar.cpp` | ctor: `setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff)` — bricht eine Endlos-Relayout-Schleife (Standalone-Fix, s.u.) |
 
 ### Standalone-Fixes (nicht Teil des ETA-Notes-Features)
@@ -334,8 +335,18 @@ ninja -j6 mixxx-test && ./mixxx-test    # -j6: volle Parallelität → OOM
 ```
 
 - DB/Settings unter `~/.mixxx/` (`mixxxdb.sqlite`, `mixxx.cfg` mit `[EtaNotes]`).
-  Erster Fork-Start migriert eine v39-DB automatisch auf v40.
-- Headless-Tests: `QT_QPA_PLATFORM=offscreen ./mixxx-test --gtest_filter=…`
+  Erster Fork-Start migriert eine ältere DB automatisch auf den aktuellen Stand
+  (v39 → v40 `track_notes`, v40 → v41 `downbeat_position`).
+- Headless-Tests: `QT_QPA_PLATFORM=offscreen ./mixxx-test --gtest_filter=…`,
+  komplett: `QT_QPA_PLATFORM=offscreen ctest --output-on-failure` (~20 min,
+  1232 Tests).
+- **Flaky, nicht erschrecken:** `StemControlTest/StemControlFixture.StemCount/"ALAC_24bit"`
+  fällt im vollen sequentiellen Durchlauf auch lokal gelegentlich durch (gemessen
+  2026-09-06 auf dem G9: 1231/1232). Es ist ein **Lade-Timeout**, kein
+  Stem-Fehler — der erste Timeout trifft `sine-30.wav`, eine gewöhnliche
+  WAV-Datei im Fixture-Aufbau, der Test misst danach 0 statt 4 Stems. Isoliert
+  (`ctest -R 'StemControlTest.*ALAC_24bit'`) besteht er zuverlässig. Vor dem
+  Verdächtigen eigener Änderungen also erst isoliert nachfahren.
 
 **WSL-Besonderheiten** (nur Windows-Dev-Maschine): Distro `Ubuntu-24.04` explizit
 angeben (Default ist `docker-desktop`), Start mit `QT_QPA_PLATFORM=xcb`
@@ -344,10 +355,11 @@ WSL-Guard-Patch nötig (Abschnitt 3).
 
 ## 7. CI, Installer, Releases
 
-- **`develop.yml`** (Caller für `build.yml`): triggert auf **jeden Push** auf den
-  Branch → volle Matrix (Linux DEB 24.04 / macOS / Windows MSI x64+arm64). Für
-  reine Doku-/Kleinst-Commits den Run canceln (`gh run cancel <id> -R RaikCC/mixxx`).
-  Manuell ohne Commit: `gh workflow run develop.yml -R RaikCC/mixxx --ref eta-notes`.
+- **`develop.yml`** (Caller für `build.yml`, volle Matrix: Linux DEB 24.04 /
+  macOS / Windows MSI x64+arm64) ist **im Repo deaktiviert**
+  (`disabled_manually`, geprüft 2026-09-06). Ein Push löst also keinen Build mehr
+  aus. Wer die Matrix braucht, muss den Workflow in den GitHub-Einstellungen erst
+  wieder aktivieren; danach triggert er wieder auf **jeden** Push.
 - **Windows-MSI:** aus der vollen Matrix; **unsigniert** (keine Signing-Secrets im
   Fork → SmartScreen-Warnung, trotzdem installierbar).
 - **DEB für Ubuntu Studio 26.04:** eigener Workflow **`deb-only.yml`**
@@ -356,6 +368,25 @@ WSL-Guard-Patch nötig (Abschnitt 3).
   **nicht** (neue Sonames: ffmpeg 8, Qt 6.10; die `*-private-abi (= x)`-Deps sind
   exakt gepinnt → nach Qt-Point-Update auf dem Zielsystem neu bauen).
   Anstoßen: `gh workflow run deb-only.yml -R RaikCC/mixxx --ref eta-notes`.
+- **DEB lokal bauen — für Raiks eigenen Rechner der deutlich schnellere Weg.**
+  Der Fork hat kein `debian/`-Verzeichnis, gepackt wird mit **CPack**, also genau
+  dem, was `deb-only.yml` auch tut. Gemessen 2026-09-06 auf dem G9 (i5-12400,
+  12 Threads): **9,3 min** Build + ~1 min `cpack` gegen **41–109 min** (Median
+  ~90) für die letzten sieben CI-Läufe. Alle Optionen des Workflows lassen sich
+  hier konfigurieren, `QML=ON` eingeschlossen.
+
+  ```bash
+  cmake -S . -B build-deb -G Ninja <Flags aus deb-only.yml>   # RelWithDebInfo, QML=ON, BULK=ON …
+  cmake --build build-deb && (cd build-deb && cpack -G DEB)
+  sudo apt-get install -y --reinstall ./build-deb/mixxx-*.deb
+  ```
+
+  Zwei Fallen: CPack leitet die Paketversion aus dem **Tag** ab, nicht aus
+  `git describe` → sie ist identisch mit der installierten, ein `apt-get install`
+  ohne **`--reinstall`** tut deshalb nichts. Und die Abhängigkeiten entstehen aus
+  dem, was auf *dieser* Maschine gelinkt wurde — für fremde Rechner (T440s, W541)
+  bleibt der CI-Build die sicherere Quelle. Ein eigenes Build-Verzeichnis nehmen,
+  damit das schnelle Debug-Verzeichnis für die Entwicklung erhalten bleibt.
 - **Artifact-Download-Falle:** Artifacts werden mit `archive: false` hochgeladen →
   der `/artifacts/<id>/zip`-API-Endpoint liefert die **rohe Datei** (MSI/DEB),
   kein Zip. `gh run download` und Entpacken scheitern daher.
