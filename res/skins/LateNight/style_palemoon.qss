@@ -2433,6 +2433,13 @@ WPushButton#PlayDeck[value="0"] {
       image: url(skins:LateNight/palemoon/buttons/btn__beat_curpos_large_active.svg) no-repeat center center;
     }
 
+  #DownbeatSet[displayValue="0"] {
+    image: url(skins:LateNight/palemoon/buttons/btn__downbeat.svg) no-repeat center center;
+    }
+    #DownbeatSet[displayValue="1"] {
+      image: url(skins:LateNight/palemoon/buttons/btn__downbeat_active.svg) no-repeat center center;
+    }
+
   #BeatsEarlier {
     image: url(skins:LateNight/palemoon/buttons/btn__beats_earlier.svg) no-repeat center center;
     }

@@ -1,0 +1,28 @@
+<!--
+Description:
+  Bar position display for all decks, one row of four rectangles per deck,
+  stacked so the rows can be compared at a glance: aligned lit rectangles mean
+  the decks run bar-synchronous, an offset shows how many beats they are apart.
+  A deck without a downbeat shows nothing (see downbeat_indicator_row.xml).
+-->
+<Template>
+  <WidgetGroup>
+    <ObjectName>DownbeatIndicators</ObjectName>
+    <Layout>vertical</Layout>
+    <SizePolicy>min,min</SizePolicy>
+    <Children>
+      <Template src="skins:LateNight/downbeat_indicator_row.xml">
+        <SetVariable name="ChanNum">1</SetVariable>
+      </Template>
+      <Template src="skins:LateNight/downbeat_indicator_row.xml">
+        <SetVariable name="ChanNum">2</SetVariable>
+      </Template>
+      <Template src="skins:LateNight/downbeat_indicator_row.xml">
+        <SetVariable name="ChanNum">3</SetVariable>
+      </Template>
+      <Template src="skins:LateNight/downbeat_indicator_row.xml">
+        <SetVariable name="ChanNum">4</SetVariable>
+      </Template>
+    </Children>
+  </WidgetGroup>
+</Template>

@@ -403,6 +403,32 @@ WOverview QLabel {
 /************** ToolBar *******************************************************/
 
 
+/************** Downbeat indicators *******************************************/
+/* One row of four rectangles per deck, lit for the bar that is currently
+   playing. Change the lit colour here to recolour both rows and, together with
+   <SetVariable name="DownbeatColor"> in skin.xml, the beatgrid downbeats. */
+#DownbeatIndicators {
+  qproperty-layoutSpacing: 1;
+  }
+  #DownbeatRowSlot,
+  #DownbeatRow {
+    qproperty-layoutSpacing: 2;
+    qproperty-layoutContentsMargins: rect(0 0 0 0);
+    background: transparent;
+    border: 0px;
+  }
+  #DownbeatSegment,
+  #DownbeatSegment[highlight="0"] {
+    background-color: #000000;
+    border: 0px;
+  }
+  #DownbeatSegment[highlight="1"] {
+    background-color: #4dd2ff;
+    border: 0px;
+  }
+/************** Downbeat indicators *******************************************/
+
+
 
 /************** Waveforms *****************************************************/
 

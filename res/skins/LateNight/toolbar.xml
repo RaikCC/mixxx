@@ -120,6 +120,12 @@
 
       <WidgetGroup><Size>me,min</Size></WidgetGroup>
 
+      <!-- Bar position of every deck that has a downbeat, centred in the
+           free space of the toolbar right above the waveforms. -->
+      <Template src="skins:LateNight/downbeat_indicators.xml"/>
+
+      <WidgetGroup><Size>me,min</Size></WidgetGroup>
+
       <StatusLight>
         <TooltipId>autodj_status</TooltipId>
         <ObjectName>AutoDjStatus</ObjectName>
