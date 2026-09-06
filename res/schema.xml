@@ -606,4 +606,18 @@ reapplying those migrations.
       CREATE INDEX IF NOT EXISTS idx_track_notes_track_id ON track_notes (track_id);
     </sql>
   </revision>
+  <revision version="41" min_compatible="3">
+    <description>
+      Add the library.downbeat_position column for the downbeat indicator:
+      the engine sample position of the beat the user marked as the first
+      beat of a bar (-1 = the track has no downbeat).
+      Backwards compatible: older Mixxx versions address the library table by
+      explicit column names and simply ignore the extra column, so they can
+      still open the database (min_compatible=3).
+      <!-- See src/track/downbeat.h -->
+    </description>
+    <sql>
+      ALTER TABLE library ADD COLUMN downbeat_position REAL DEFAULT -1;
+    </sql>
+  </revision>
 </schema>

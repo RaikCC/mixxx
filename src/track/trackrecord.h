@@ -57,6 +57,10 @@ class TrackRecord final {
     MIXXX_DECL_PROPERTY(mixxx::audio::FramePos, mainCuePosition, MainCuePosition)
     MIXXX_DECL_PROPERTY(int, rating, Rating)
     MIXXX_DECL_PROPERTY(bool, bpmLocked, BpmLocked)
+    /// Position of the beat that the user marked as a downbeat, i.e. the
+    /// first beat of a bar. Every 4th beat in either direction is a downbeat
+    /// as well. An invalid position means the track has no downbeat.
+    MIXXX_DECL_PROPERTY(mixxx::audio::FramePos, downbeatPosition, DownbeatPosition)
 
   public:
     // Data migration: Reload track total from file tags if not initialized

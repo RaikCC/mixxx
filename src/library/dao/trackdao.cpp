@@ -460,6 +460,7 @@ void TrackDAO::addTracksPrepare() {
             "key,"
             "key_id,"
             "cuepoint,"
+            "downbeat_position,"
             "bpm,"
             "replaygain,"
             "replaygain_peak,"
@@ -508,6 +509,7 @@ void TrackDAO::addTracksPrepare() {
             ":key,"
             ":key_id,"
             ":cuepoint,"
+            ":downbeat_position,"
             ":bpm,"
             ":replaygain,"
             ":replaygain_peak,"
@@ -611,6 +613,8 @@ void bindTrackLibraryValues(
     pTrackLibraryQuery->bindValue(":rating", track.getRating());
     pTrackLibraryQuery->bindValue(":cuepoint",
             track.getMainCuePosition().toEngineSamplePosMaybeInvalid());
+    pTrackLibraryQuery->bindValue(":downbeat_position",
+            track.getDownbeatPosition().toEngineSamplePosMaybeInvalid());
     pTrackLibraryQuery->bindValue(":bpm_lock", track.getBpmLocked() ? 1 : 0);
     pTrackLibraryQuery->bindValue(":replaygain", trackInfo.getReplayGain().getRatio());
     pTrackLibraryQuery->bindValue(":replaygain_peak", trackInfo.getReplayGain().getPeak());
@@ -1221,6 +1225,11 @@ void setTrackCuePoint(const QSqlRecord& record, const int column, Track* pTrack)
             record.value(column).toDouble()));
 }
 
+void setTrackDownbeatPosition(const QSqlRecord& record, const int column, Track* pTrack) {
+    pTrack->setDownbeatPosition(mixxx::audio::FramePos::fromEngineSamplePosMaybeInvalid(
+            record.value(column).toDouble()));
+}
+
 void setTrackReplayGainRatio(const QSqlRecord& record, const int column, Track* pTrack) {
     mixxx::ReplayGain replayGain(pTrack->getReplayGain());
     replayGain.setRatio(record.value(column).toDouble());
@@ -1405,6 +1414,7 @@ TrackPointer TrackDAO::getTrackById(TrackId trackId) const {
             {"comment", setTrackComment},
             {"url", setTrackUrl},
             {"cuepoint", setTrackCuePoint},
+            {"downbeat_position", setTrackDownbeatPosition},
             {"replaygain", setTrackReplayGainRatio},
             {"replaygain_peak", setTrackReplayGainPeak},
             {"timesplayed", setTrackTimesPlayed},
@@ -1717,6 +1727,7 @@ bool TrackDAO::updateTrack(const Track& track) const {
             "key=:key,"
             "key_id=:key_id,"
             "cuepoint=:cuepoint,"
+            "downbeat_position=:downbeat_position,"
             "bpm=:bpm,"
             "replaygain=:replaygain,"
             "replaygain_peak=:replaygain_peak,"

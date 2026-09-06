@@ -164,6 +164,13 @@ class Track : public QObject {
     void setBpmLocked(bool bpmLocked);
     bool isBpmLocked() const;
 
+    // Position of the beat the user marked as a downbeat (first beat of a
+    // bar); every 4th beat from there in either direction is a downbeat too.
+    // An invalid position means the track has no downbeat information, which
+    // is the state every track starts out in.
+    mixxx::audio::FramePos getDownbeatPosition() const;
+    void setDownbeatPosition(mixxx::audio::FramePos position);
+
     void setReplayGain(const mixxx::ReplayGain&);
     // Adjust ReplayGain by multiplying the given gain amount.
     void adjustReplayGainFromPregain(double gain, const QString& requestingPlayerGroup);
@@ -509,6 +516,7 @@ class Track : public QObject {
     void ratingUpdated(int rating);
     void cuesUpdated();
     void notesUpdated();
+    void downbeatPositionChanged();
 #ifdef __STEM__
     void stemsUpdated();
 #endif

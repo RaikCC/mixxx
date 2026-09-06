@@ -1557,6 +1557,7 @@ add_library(
   src/track/note.cpp
   src/track/cueinfo.cpp
   src/track/cueinfoimporter.cpp
+  src/track/downbeat.cpp
   src/track/globaltrackcache.cpp
   src/track/keyfactory.cpp
   src/track/keys.cpp
