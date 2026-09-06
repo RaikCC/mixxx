@@ -194,6 +194,71 @@ Mehrfachauswahl und in den Deck-Widget-Menüs.
   keinem Bibliotheksmenü — und der Debug-Build assertet (die Assertions sind hier
   scharf, `DEBUG_ASSERTIONS_FATAL=OFF`, also nur Log).
 
+### Waveform/Skin: Downbeat-Indikator (2026-09-06)
+
+Fork-Feature über ETA Notes hinaus, Branch-Historie `feat/downbeat-indicator`.
+Markiert **einen Beat des Beatgrids als Taktanfang** (Downbeat) und zeigt
+daraus zwei Dinge: dickere, hellblaue Downbeat-Linien im Beatgrid der Waveform
+und – für jedes Deck mit Downbeat – eine Reihe aus **4 liegenden Rechtecken in
+der Toolbar** über den Waveforms, in der das gerade gespielte Taktviertel
+leuchtet. Untereinander gestapelt zeigen die Reihen auf einen Blick, ob zwei
+Decks taktsynchron laufen oder um wie viele Schläge sie versetzt sind.
+
+- **Bedienung:** Knopf **Downbeat** in den Beatgrid-Controls rechts neben der
+  Waveform (direkt hinter „Adjust Beatgrid"/CurPos). Ein Druck macht den Beat,
+  der dem Abspielmarker am nächsten liegt, zum Downbeat — und damit jeden
+  4. Beat davor und danach. Trifft der nächste Druck einen Beat, der bereits
+  Downbeat ist, wird die Markierung **komplett entfernt**; trifft er einen
+  anderen Beat, ersetzt dieser die alte Markierung.
+- **Ohne Downbeat sieht alles aus wie vorher:** Der Renderer und die
+  Indikatorreihe zeichnen dann gar nichts. Das ist bewusst die einzige
+  Fallunterscheidung — kein „leerer" Zustand mit dunklen Rechtecken.
+- **Datenmodell:** *eine* Zahl pro Track, `Track::getDownbeatPosition()` /
+  `setDownbeatPosition()` (Engine-Sample-Position wie bei Cues, invalid = kein
+  Downbeat). Die Taktphase wird **nicht gespeichert**, sondern in
+  `src/track/downbeat.h` aus dem Beat-Index-Abstand zum Anker gerechnet
+  (`Beats::ConstIterator::operator-`, Modulo 4). Der Anker wird beim Rechnen
+  per `findClosestBeat()` aufs Grid gesnappt — verschiebt man das Beatgrid
+  nachträglich, wandert der Downbeat mit, statt ungültig zu werden.
+- **Persistenz:** Migration **v41**, neue Spalte `library.downbeat_position`
+  (`min_compatible="3"`, siehe Entscheidung 1 oben — die offizielle 2.6.0-beta
+  spricht die `library`-Tabelle über explizite Spaltennamen an und ignoriert
+  die Zusatzspalte).
+- **Engine:** alles in `ClockControl` (dort sitzt schon `beat_active`, und es
+  bekommt pro Callback `updateIndicators(rate, position, sampleRate)`).
+  Drei neue COs pro Deck:
+  `downbeat_set` (ControlPushButton, Setzen/Aufheben),
+  `downbeat_active` (0/1, read-only) und
+  `downbeat_phase` (−1 oder 0..3, read-only).
+  `downbeat_phase` wird **vor** dem Standstill-Early-Return von
+  `updateIndicators()` aktualisiert, damit die Anzeige auch beim stehenden oder
+  gescrubbten Deck stimmt (ein Deck mit geladenem Track wird laut
+  `EngineDeck::updateActiveState()` in jedem Callback verarbeitet).
+- **Rendering:** eigener Knoten `WaveformRenderDownbeat` **nach**
+  `WaveformRenderBeat` (Play- und Slip-Pfad), damit `waveformrenderbeat.cpp`
+  unangetastet bleibt und die Downbeat-Linie ihre eigene Farbe/Breite bekommt
+  (3 px, auf dem Beat zentriert). Die Taktphase wird einmal für den ersten
+  sichtbaren Beat berechnet und dann nur noch hochgezählt.
+- **Skin (nur LateNight):** `<DownbeatColor>` im `<Visual>`-Knoten (Default im
+  Renderer `#4dd2ff`, falls ein Skin die Farbe nicht setzt),
+  `downbeat_indicators.xml` + `downbeat_indicator_row.xml` für die Toolbar,
+  Icons `btn__downbeat[_active].svg` in beiden Schemes. Die Indikator-Zeile
+  jedes Decks liegt in einem **fest dimensionierten Slot**, damit die Zeilen
+  beim Ein-/Ausblenden nicht verrutschen — sonst wäre der Vergleich zweier
+  Decks wertlos.
+- **Farbe ändern:** Rechteck-Farbe in `style.qss` (`#DownbeatSegment[highlight="1"]`),
+  Gridlinien-Farbe in `skin.xml` (`<SetVariable name="DownbeatColor">`, je Scheme).
+- **Dateien:** neu `src/track/downbeat.{h,cpp}`,
+  `src/waveform/renderers/allshader/waveformrenderdownbeat.{h,cpp}`,
+  `res/skins/LateNight/downbeat_indicator{s,_row}.xml`,
+  `res/skins/LateNight/{classic,palemoon}/buttons/btn__downbeat[_active].svg`;
+  geändert `res/schema.xml`, `src/database/mixxxdb.cpp`,
+  `src/track/track.{h,cpp}`, `src/track/trackrecord.h`,
+  `src/library/dao/trackdao.cpp`, `src/engine/controls/clockcontrol.{h,cpp}`,
+  `src/engine/enginebuffer.{h,cpp}`,
+  `src/waveform/widgets/allshader/waveformwidget.cpp`,
+  `src/skin/legacy/tooltips.cpp`, `CMakeLists.txt` und die LateNight-Skin-Dateien.
+
 ### Dev-only (nicht feature-relevant)
 
 - **WSL-Guard** in `CMakeLists.txt` (~Z. 212): Upstreams `FATAL_ERROR` bei
