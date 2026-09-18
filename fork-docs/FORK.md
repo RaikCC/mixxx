@@ -297,6 +297,15 @@ Decks taktsynchron laufen oder um wie viele Schläge sie versetzt sind.
    zeigen (umschaltbar, Spec sah nur Takte vor); Nachleuchten-Opacity 0.6–0.7
    statt 0.25–0.33 (0.3 war unlesbar); Live-Bars wrappen auf feste Breite statt
    zu elidieren (§10-Verhalten, nach Zwischenschritt mit Eliding).
+9. **Keine Phrasen-Anzeige über ein festes Beat-Raster.** Am 2026-09-18 gebaut
+   und von Raik noch am selben Abend verworfen: ein Phrasen-Anker pro Track,
+   daraus alle 32 Beats eine pinke Linie (Technik wie beim Downbeat). Auf echten
+   Tracks passt das nur an einem Ende. Einschübe von 4 oder 16 Beats, Breaks und
+   Übergänge verschieben die Phase, und ein einzelner Anker mit fester Periode
+   kann das grundsätzlich nicht abbilden. Beim Downbeat (Periode 4) ist dasselbe
+   Prinzip unkritisch. **Nicht erneut vorschlagen.** Falls Raik das Thema selbst
+   aufbringt, bräuchte es Phrasenmarken pro Abschnitt (jede gilt ab ihrer
+   Position). Der Code wurde gelöscht und war nie in `eta-notes`.
 
 ## 5. Rebase-Leitfaden
 
@@ -347,6 +356,68 @@ ninja -j6 mixxx-test && ./mixxx-test    # -j6: volle Parallelität → OOM
   WAV-Datei im Fixture-Aufbau, der Test misst danach 0 statt 4 Stems. Isoliert
   (`ctest -R 'StemControlTest.*ALAC_24bit'`) besteht er zuverlässig. Vor dem
   Verdächtigen eigener Änderungen also erst isoliert nachfahren.
+- **Komplettlauf nur über `ctest`, nicht als ein `./mixxx-test`-Prozess**
+  (gemessen 2026-09-18, Debug-Build). Als Einzelprozess bricht der Lauf bei
+  `SoundSourceProxyTest.openEmptyFile` ab: Ein `DEBUG_ASSERT` in
+  `util/fileinfo.h` beendet den Prozess mit Exit 130, alle Tests danach fehlen
+  dann. Außerdem scheitern dort die vier
+  `ControllerScriptEngineLegacyTimerTest.beginTimer_singleShotTimer*`, die
+  einzeln bestehen. Beides ist Upstream-Verhalten und hat nichts mit dem Fork
+  zu tun. `ctest` startet jeden Test in einem eigenen Prozess und umgeht das.
+
+**GUI-Smoke-Test, ohne Raiks laufende Session zu stören.** Raik hat oft sein
+produktives Mixxx offen (Inpulse, JACK). Eine zweite Instanz auf seinem Desktop
+würde um Audiogerät und Controller konkurrieren und Fenster aufpoppen lassen.
+Xvfb und xdotool sind nicht installiert (apt nur nach Absprache). Dieser Weg
+braucht nichts davon und wurde am 2026-09-18 erprobt:
+
+1. **Eigenes Settings-Verzeichnis:** Kopie von `~/.mixxx`. Die DB per SQLite-Backup
+   kopieren (`src.backup(dst)` in Python), weil sie im Betrieb offen ist. In
+   `mixxx.cfg` unter `[Controller]` alle Geräte auf `0` setzen und eine leere
+   `soundconfig.xml` (ohne `<SoundDevice>`) hinterlegen.
+2. **Verschachteltes KWin im virtuellen Framebuffer**, mit eigener D-Bus-Session
+   (Pflicht, sonst kollidiert es mit Raiks KWin):
+
+   ```bash
+   env -u WAYLAND_DISPLAY -u DISPLAY dbus-run-session -- kwin_wayland --virtual \
+     --xwayland --width 1920 --height 1080 --socket wayland-smoke \
+     --no-lockscreen --no-global-shortcuts --exit-with-session ./session.sh
+   ```
+
+   `session.sh` startet Mixxx auf dem inneren Xwayland (war `:1`) und sperrt
+   Audio komplett ab:
+
+   ```bash
+   exec env QT_QPA_PLATFORM=xcb ALSA_CONFIG_PATH=/pfad/leere-datei \
+     PIPEWIRE_REMOTE=none PULSE_SERVER=unix:/nonexistent JACK_NO_START_SERVER=1 \
+     ./mixxx --resourcePath ../res --settingsPath <kopie> "<track>"
+   ```
+
+   Ein Track als Argument landet direkt in Deck 1. Die allshader-Waveform
+   rendert dort per Software-GL korrekt.
+3. **Dialog „Keine Ausgabegeräte"** mit Enter bestätigen (Weiter).
+4. **Screenshot:** `DISPLAY=:1 import -window <id> shot.png` (ImageMagick,
+   Fenster-ID aus `xwininfo -root -tree`). Das Bild zeigt Fensterkoordinaten.
+   Für Klicks den Fenster-Offset aus `xwininfo` addieren (war `+0+34`).
+5. **Klicks und Tasten** per XTest über Python-ctypes, ohne Zusatzpakete:
+
+   ```python
+   import ctypes
+   x11 = ctypes.CDLL("libX11.so.6"); xt = ctypes.CDLL("libXtst.so.6")
+   x11.XOpenDisplay.restype = ctypes.c_void_p
+   d = ctypes.c_void_p(x11.XOpenDisplay(b":1"))
+   xt.XTestFakeMotionEvent(d, -1, x, y, 0)
+   xt.XTestFakeButtonEvent(d, 1, 1, 0); xt.XTestFakeButtonEvent(d, 1, 0, 0)
+   x11.XFlush(d)
+   # Tasten: kc = x11.XKeysymToKeycode(d, x11.XStringToKeysym(b"Return")),
+   # dann XTestFakeKeyEvent(d, kc, 1, 0) / (d, kc, 0, 0)
+   ```
+
+6. **Beenden mit Ctrl+Q:** Mixxx schreibt dabei die DB sauber, das virtuelle KWin
+   endet mit ihm. Danach lassen sich die Ergebnisse in der DB-Kopie prüfen.
+
+Das ersetzt Raiks eigene Sichtprüfung nicht (siehe `CLAUDE.md`), fängt aber grobe
+Fehler ab, bevor er sie zu sehen bekommt.
 
 **WSL-Besonderheiten** (nur Windows-Dev-Maschine): Distro `Ubuntu-24.04` explizit
 angeben (Default ist `docker-desktop`), Start mit `QT_QPA_PLATFORM=xcb`
@@ -400,6 +471,10 @@ WSL-Guard-Patch nötig (Abschnitt 3).
 ## 8. Bekannte Fallen (Kurzliste)
 
 - `mixxx-test` nur mit `ninja -j6` (OOM bei voller Parallelität; `ninja mixxx` ok).
+- Ein neues Signal in einem Header, eingefügt **während** ein Build läuft,
+  führt zu `mold: undefined symbol Track::…Changed()`. Der moc-Code wird zwar
+  neu erzeugt, das `.cpp` mit `#include "moc_….cpp"` aber nicht neu übersetzt.
+  Einfach `ninja` noch einmal laufen lassen.
 - `NotePointer` hat kein `operator=(nullptr_t)` → mit `.reset()` leeren.
 - `QTextDocument::setTextWidth(-1)` heißt **nicht** „kein Umbruch" (fällt auf
   Default-Page-Size zurück) → für no-wrap große feste Breite setzen,
